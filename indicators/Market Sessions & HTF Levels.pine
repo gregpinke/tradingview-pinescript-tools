@@ -1,0 +1,361 @@
+//@version=6
+indicator("HTF Opens + Breaks + Sessions", shorttitle="HTF Opens Sessions", overlay=true, max_lines_count=500, max_labels_count=500)
+
+//------------------------------------------------------------------------------
+// Inputs
+//------------------------------------------------------------------------------
+
+// General
+groupGeneral = "General"
+extendActiveLevelsRight      = input.bool(true, "Extend active open levels right", group=groupGeneral)
+limitSessionsBreaksIntraday  = input.bool(true, "Show sessions / breaks on intraday charts only", group=groupGeneral)
+autoHideDailyOnHigherTF      = input.bool(true, "Auto-hide daily open on non-intraday charts", group=groupGeneral)
+forceShowDailyOnHigherTF     = input.bool(false, "Force show daily open on non-intraday charts", group=groupGeneral)
+
+// Daily Open
+groupDaily = "Daily Open"
+showDailyOpen           = input.bool(true, "Show active daily open", group=groupDaily)
+dailyColor              = input.color(color.blue, "Color", group=groupDaily)
+dailyWidth              = input.int(2, "Line width", minval=1, maxval=4, group=groupDaily)
+dailyStyleInput         = input.string("Solid", "Line style", options=["Solid", "Dashed", "Dotted"], group=groupDaily)
+dailyShowNameLabel      = input.bool(true, "Show right-edge label", group=groupDaily)
+dailyShowPriceLabel     = input.bool(true, "Show price in label", group=groupDaily)
+
+// Weekly Open
+groupWeekly = "Weekly Open"
+showWeeklyOpen          = input.bool(true, "Show active weekly open", group=groupWeekly)
+weeklyColor             = input.color(color.orange, "Color", group=groupWeekly)
+weeklyWidth             = input.int(2, "Line width", minval=1, maxval=4, group=groupWeekly)
+weeklyStyleInput        = input.string("Solid", "Line style", options=["Solid", "Dashed", "Dotted"], group=groupWeekly)
+weeklyShowNameLabel     = input.bool(true, "Show right-edge label", group=groupWeekly)
+weeklyShowPriceLabel    = input.bool(true, "Show price in label", group=groupWeekly)
+
+// Monthly Open
+groupMonthly = "Monthly Open"
+showMonthlyOpen         = input.bool(true, "Show active monthly open", group=groupMonthly)
+monthlyColor            = input.color(color.green, "Color", group=groupMonthly)
+monthlyWidth            = input.int(2, "Line width", minval=1, maxval=4, group=groupMonthly)
+monthlyStyleInput       = input.string("Solid", "Line style", options=["Solid", "Dashed", "Dotted"], group=groupMonthly)
+monthlyShowNameLabel    = input.bool(true, "Show right-edge label", group=groupMonthly)
+monthlyShowPriceLabel   = input.bool(true, "Show price in label", group=groupMonthly)
+
+// Quarterly Open
+groupQuarterly = "Quarterly Open"
+showQuarterlyOpen        = input.bool(true, "Show active quarterly open", group=groupQuarterly)
+quarterlyColor           = input.color(color.rgb(0, 170, 140), "Color", group=groupQuarterly)
+quarterlyWidth           = input.int(3, "Line width", minval=1, maxval=4, group=groupQuarterly)
+quarterlyStyleInput      = input.string("Dashed", "Line style", options=["Solid", "Dashed", "Dotted"], group=groupQuarterly)
+quarterlyShowNameLabel   = input.bool(true, "Show right-edge label", group=groupQuarterly)
+quarterlyShowPriceLabel  = input.bool(true, "Show price in label", group=groupQuarterly)
+
+// Historical Opens
+groupHistory = "Historical Opens"
+showHistoricalDaily      = input.bool(false, "Show historical daily opens", group=groupHistory)
+maxHistoricalDaily       = input.int(30, "Max daily history", minval=0, maxval=100, group=groupHistory)
+historicalDailyFade      = input.int(82, "Daily history fade", minval=0, maxval=100, group=groupHistory)
+
+showHistoricalWeekly     = input.bool(true, "Show historical weekly opens", group=groupHistory)
+maxHistoricalWeekly      = input.int(60, "Max weekly history", minval=0, maxval=120, group=groupHistory)
+historicalWeeklyFade     = input.int(75, "Weekly history fade", minval=0, maxval=100, group=groupHistory)
+
+showHistoricalMonthly    = input.bool(true, "Show historical monthly opens", group=groupHistory)
+maxHistoricalMonthly     = input.int(36, "Max monthly history", minval=0, maxval=80, group=groupHistory)
+historicalMonthlyFade    = input.int(70, "Monthly history fade", minval=0, maxval=100, group=groupHistory)
+
+showHistoricalQuarterly  = input.bool(true, "Show historical quarterly opens", group=groupHistory)
+maxHistoricalQuarterly   = input.int(24, "Max quarterly history", minval=0, maxval=60, group=groupHistory)
+historicalQuarterlyFade  = input.int(65, "Quarterly history fade", minval=0, maxval=100, group=groupHistory)
+
+// Period Breaks
+groupBreaks = "Period Breaks"
+showDayBreak          = input.bool(true, "Day break", group=groupBreaks)
+showWeekBreak         = input.bool(true, "Week break", group=groupBreaks)
+showMonthBreak        = input.bool(true, "Month break", group=groupBreaks)
+showQuarterBreak      = input.bool(true, "Quarter break", group=groupBreaks)
+showHalfYearBreak     = input.bool(true, "Half-year break", group=groupBreaks)
+showYearBreak         = input.bool(true, "Year break", group=groupBreaks)
+breakLineWidth        = input.int(1, "Marker width", minval=1, maxval=3, group=groupBreaks)
+breakLineStyleInput   = input.string("Dotted", "Marker style", options=["Solid", "Dashed", "Dotted"], group=groupBreaks)
+dayBreakColor         = input.color(color.new(color.gray, 68), "Day color", group=groupBreaks)
+weekBreakColor        = input.color(color.new(color.blue, 58), "Week color", group=groupBreaks)
+monthBreakColor       = input.color(color.new(color.red, 55), "Month color", group=groupBreaks)
+quarterBreakColor     = input.color(color.new(color.teal, 50), "Quarter color", group=groupBreaks)
+halfYearBreakColor    = input.color(color.new(color.purple, 48), "Half-year color", group=groupBreaks)
+yearBreakColor        = input.color(color.new(color.black, 35), "Year color", group=groupBreaks)
+maxBreakMarkers       = input.int(120, "Max break markers", minval=0, maxval=150, group=groupBreaks)
+
+// Session Style
+groupSessionStyle = "Session Style"
+showSessionOpenLine    = input.bool(true, "Show session-open line", group=groupSessionStyle)
+showSessionLabel       = input.bool(true, "Show session-start label", group=groupSessionStyle)
+sessionLineWidth       = input.int(1, "Session line width", minval=1, maxval=3, group=groupSessionStyle)
+sessionLineStyleInput  = input.string("Solid", "Session line style", options=["Solid", "Dashed", "Dotted"], group=groupSessionStyle)
+maxSessionOpenLines    = input.int(90, "Max session-open lines", minval=0, maxval=150, group=groupSessionStyle)
+maxSessionLabels       = input.int(90, "Max session labels", minval=0, maxval=150, group=groupSessionStyle)
+
+// Asia Session
+groupAsia = "Asia Session"
+showAsiaSession        = input.bool(true, "Enable Asia session", group=groupAsia)
+asiaSession            = input.session("0000-0900", "Session", group=groupAsia)
+asiaTimezone           = input.string("Asia/Tokyo", "Timezone", group=groupAsia)
+asiaColor              = input.color(color.rgb(123, 104, 238), "Color", group=groupAsia)
+asiaTransparency       = input.int(88, "Transparency", minval=0, maxval=100, group=groupAsia)
+
+// London Session
+groupLondon = "London Session"
+showLondonSession      = input.bool(true, "Enable London session", group=groupLondon)
+londonSession          = input.session("0800-1700", "Session", group=groupLondon)
+londonTimezone         = input.string("Europe/London", "Timezone", group=groupLondon)
+londonColor            = input.color(color.rgb(70, 130, 180), "Color", group=groupLondon)
+londonTransparency     = input.int(88, "Transparency", minval=0, maxval=100, group=groupLondon)
+
+// New York Session
+groupNewYork = "New York Session"
+showNewYorkSession     = input.bool(true, "Enable New York session", group=groupNewYork)
+newYorkSession         = input.session("0930-1600", "Session", group=groupNewYork)
+newYorkTimezone        = input.string("America/New_York", "Timezone", group=groupNewYork)
+newYorkColor           = input.color(color.rgb(205, 92, 92), "Color", group=groupNewYork)
+newYorkTransparency    = input.int(88, "Transparency", minval=0, maxval=100, group=groupNewYork)
+
+// Off-Session Shading
+groupOffSession = "Off-Session Shading"
+showOffSessionShading  = input.bool(false, "Shade off-session hours", group=groupOffSession)
+offSessionColor        = input.color(color.rgb(120, 120, 120), "Color", group=groupOffSession)
+offSessionTransparency = input.int(95, "Transparency", minval=0, maxval=100, group=groupOffSession)
+
+//------------------------------------------------------------------------------
+// Helpers
+//------------------------------------------------------------------------------
+
+f_line_style(styleText) =>
+    switch styleText
+        "Dashed" => line.style_dashed
+        "Dotted" => line.style_dotted
+        => line.style_solid
+
+f_is_new_period(tf) =>
+    t = time(tf)
+    not na(t) and (na(t[1]) or t != t[1])
+
+f_htf_open(tf) =>
+    request.security(syminfo.tickerid, tf, open, gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_on)
+
+f_in_session(sessionText, sessionTz) =>
+    not na(time(timeframe.period, sessionText, sessionTz))
+
+f_session_start(inSession) =>
+    inSession and not inSession[1]
+
+f_level_text(levelName, levelPrice, showName, showPrice) =>
+    string txt = ""
+    if showName
+        txt := levelName
+    if showPrice
+        txt += (txt == "" ? "" : " ") + str.tostring(levelPrice, format.mintick)
+    txt
+
+f_sync_active_line(line lineIn, bool enabled, int x1Time, int x2Time, float y, color clr, int width, string styleText, bool extendRight) =>
+    line out = lineIn
+    if enabled and not na(x1Time) and not na(x2Time) and not na(y)
+        if na(out)
+            out := line.new(x1Time, y, x2Time, y, xloc=xloc.bar_time, extend=extendRight ? extend.right : extend.none, color=clr, width=width, style=f_line_style(styleText))
+        else
+            line.set_xy1(out, x1Time, y)
+            line.set_xy2(out, x2Time, y)
+            line.set_color(out, clr)
+            line.set_width(out, width)
+            line.set_style(out, f_line_style(styleText))
+            line.set_extend(out, extendRight ? extend.right : extend.none)
+    else
+        if not na(out)
+            line.delete(out)
+            out := na
+    out
+
+f_sync_active_label(label labelIn, bool enabled, int xTime, float y, string txt, color bgColor, color txtColor) =>
+    label out = labelIn
+    if enabled and not na(xTime) and not na(y) and txt != ""
+        if na(out)
+            out := label.new(xTime, y, txt, xloc=xloc.bar_time, yloc=yloc.price, style=label.style_label_left, size=size.tiny, color=bgColor, textcolor=txtColor)
+        else
+            label.set_x(out, xTime)
+            label.set_y(out, y)
+            label.set_text(out, txt)
+            label.set_color(out, bgColor)
+            label.set_textcolor(out, txtColor)
+    else
+        if not na(out)
+            label.delete(out)
+            out := na
+    out
+
+f_trim_lines(line[] store, int maxItems) =>
+    while array.size(store) > maxItems
+        oldLine = array.shift(store)
+        line.delete(oldLine)
+
+f_trim_labels(label[] store, int maxItems) =>
+    while array.size(store) > maxItems
+        oldLabel = array.shift(store)
+        label.delete(oldLabel)
+
+f_add_historical_line(line[] store, bool enabled, int maxItems, int x1Time, int x2Time, float y, color clr, int width, string styleText) =>
+    if enabled and maxItems > 0 and not na(x1Time) and not na(x2Time) and x2Time >= x1Time and not na(y)
+        histLine = line.new(x1Time, y, x2Time, y, xloc=xloc.bar_time, extend=extend.none, color=clr, width=width, style=f_line_style(styleText))
+        array.push(store, histLine)
+        f_trim_lines(store, maxItems)
+
+f_add_vertical_marker(line[] store, bool enabled, int maxItems, color clr, int width, string styleText) =>
+    if enabled and maxItems > 0
+        marker = line.new(bar_index, low - syminfo.mintick, bar_index, high + syminfo.mintick, xloc=xloc.bar_index, extend=extend.both, color=clr, width=width, style=f_line_style(styleText))
+        array.push(store, marker)
+        f_trim_lines(store, maxItems)
+
+f_add_session_label(label[] store, bool enabled, int maxItems, string txt, color bgColor, color txtColor) =>
+    if enabled and maxItems > 0
+        lb = label.new(bar_index, high, txt, xloc=xloc.bar_index, yloc=yloc.abovebar, style=label.style_label_down, size=size.tiny, color=bgColor, textcolor=txtColor)
+        array.push(store, lb)
+        f_trim_labels(store, maxItems)
+
+//------------------------------------------------------------------------------
+// Period detection
+//------------------------------------------------------------------------------
+
+newDay      = f_is_new_period("D")
+newWeek     = f_is_new_period("W")
+newMonth    = f_is_new_period("M")
+newQuarter  = f_is_new_period("3M")
+newHalfYear = f_is_new_period("6M")
+newYear     = f_is_new_period("12M")
+
+showIntradayTools = not limitSessionsBreaksIntraday or timeframe.isintraday
+dailyVisible = showDailyOpen and (timeframe.isintraday or not autoHideDailyOnHigherTF or forceShowDailyOnHigherTF)
+
+//------------------------------------------------------------------------------
+// Active HTF opens
+//------------------------------------------------------------------------------
+
+dailyOpen     = f_htf_open("D")
+weeklyOpen    = f_htf_open("W")
+monthlyOpen   = f_htf_open("M")
+quarterlyOpen = f_htf_open("3M")
+
+//------------------------------------------------------------------------------
+// Historical lifecycle
+//------------------------------------------------------------------------------
+
+var int dailyStartTime     = na
+var int weeklyStartTime    = na
+var int monthlyStartTime   = na
+var int quarterlyStartTime = na
+
+if barstate.isfirst
+    dailyStartTime     := time
+    weeklyStartTime    := time
+    monthlyStartTime   := time
+    quarterlyStartTime := time
+
+var line[] historicalDailyLines     = array.new_line()
+var line[] historicalWeeklyLines    = array.new_line()
+var line[] historicalMonthlyLines   = array.new_line()
+var line[] historicalQuarterlyLines = array.new_line()
+
+if not barstate.isfirst
+    if newDay
+        f_add_historical_line(historicalDailyLines, showHistoricalDaily and dailyVisible, maxHistoricalDaily, dailyStartTime, time[1], dailyOpen[1], color.new(dailyColor, historicalDailyFade), math.max(1, dailyWidth - 1), dailyStyleInput)
+        dailyStartTime := time
+
+    if newWeek
+        f_add_historical_line(historicalWeeklyLines, showHistoricalWeekly, maxHistoricalWeekly, weeklyStartTime, time[1], weeklyOpen[1], color.new(weeklyColor, historicalWeeklyFade), math.max(1, weeklyWidth - 1), weeklyStyleInput)
+        weeklyStartTime := time
+
+    if newMonth
+        f_add_historical_line(historicalMonthlyLines, showHistoricalMonthly, maxHistoricalMonthly, monthlyStartTime, time[1], monthlyOpen[1], color.new(monthlyColor, historicalMonthlyFade), math.max(1, monthlyWidth - 1), monthlyStyleInput)
+        monthlyStartTime := time
+
+    if newQuarter
+        f_add_historical_line(historicalQuarterlyLines, showHistoricalQuarterly, maxHistoricalQuarterly, quarterlyStartTime, time[1], quarterlyOpen[1], color.new(quarterlyColor, historicalQuarterlyFade), math.max(1, quarterlyWidth - 1), quarterlyStyleInput)
+        quarterlyStartTime := time
+
+f_trim_lines(historicalDailyLines, maxHistoricalDaily)
+f_trim_lines(historicalWeeklyLines, maxHistoricalWeekly)
+f_trim_lines(historicalMonthlyLines, maxHistoricalMonthly)
+f_trim_lines(historicalQuarterlyLines, maxHistoricalQuarterly)
+
+//------------------------------------------------------------------------------
+// Active open lines / labels
+//------------------------------------------------------------------------------
+
+var line dailyActiveLine     = na
+var line weeklyActiveLine    = na
+var line monthlyActiveLine   = na
+var line quarterlyActiveLine = na
+
+var label dailyActiveLabel     = na
+var label weeklyActiveLabel    = na
+var label monthlyActiveLabel   = na
+var label quarterlyActiveLabel = na
+
+dailyActiveLine     := f_sync_active_line(dailyActiveLine, dailyVisible, dailyStartTime, time, dailyOpen, dailyColor, dailyWidth, dailyStyleInput, extendActiveLevelsRight)
+weeklyActiveLine    := f_sync_active_line(weeklyActiveLine, showWeeklyOpen, weeklyStartTime, time, weeklyOpen, weeklyColor, weeklyWidth, weeklyStyleInput, extendActiveLevelsRight)
+monthlyActiveLine   := f_sync_active_line(monthlyActiveLine, showMonthlyOpen, monthlyStartTime, time, monthlyOpen, monthlyColor, monthlyWidth, monthlyStyleInput, extendActiveLevelsRight)
+quarterlyActiveLine := f_sync_active_line(quarterlyActiveLine, showQuarterlyOpen, quarterlyStartTime, time, quarterlyOpen, quarterlyColor, quarterlyWidth, quarterlyStyleInput, extendActiveLevelsRight)
+
+dailyLabelText     = f_level_text("D Open", dailyOpen, dailyShowNameLabel, dailyShowPriceLabel)
+weeklyLabelText    = f_level_text("W Open", weeklyOpen, weeklyShowNameLabel, weeklyShowPriceLabel)
+monthlyLabelText   = f_level_text("M Open", monthlyOpen, monthlyShowNameLabel, monthlyShowPriceLabel)
+quarterlyLabelText = f_level_text("Q Open", quarterlyOpen, quarterlyShowNameLabel, quarterlyShowPriceLabel)
+
+dailyActiveLabel     := f_sync_active_label(dailyActiveLabel, dailyVisible and barstate.islast and (dailyShowNameLabel or dailyShowPriceLabel), time, dailyOpen, dailyLabelText, color.new(dailyColor, 80), chart.fg_color)
+weeklyActiveLabel    := f_sync_active_label(weeklyActiveLabel, showWeeklyOpen and barstate.islast and (weeklyShowNameLabel or weeklyShowPriceLabel), time, weeklyOpen, weeklyLabelText, color.new(weeklyColor, 80), chart.fg_color)
+monthlyActiveLabel   := f_sync_active_label(monthlyActiveLabel, showMonthlyOpen and barstate.islast and (monthlyShowNameLabel or monthlyShowPriceLabel), time, monthlyOpen, monthlyLabelText, color.new(monthlyColor, 80), chart.fg_color)
+quarterlyActiveLabel := f_sync_active_label(quarterlyActiveLabel, showQuarterlyOpen and barstate.islast and (quarterlyShowNameLabel or quarterlyShowPriceLabel), time, quarterlyOpen, quarterlyLabelText, color.new(quarterlyColor, 78), chart.fg_color)
+
+//------------------------------------------------------------------------------
+// Break markers
+//------------------------------------------------------------------------------
+
+var line[] breakMarkers = array.new_line()
+
+f_add_vertical_marker(breakMarkers, showIntradayTools and showDayBreak and newDay, maxBreakMarkers, dayBreakColor, breakLineWidth, breakLineStyleInput)
+f_add_vertical_marker(breakMarkers, showIntradayTools and showWeekBreak and newWeek, maxBreakMarkers, weekBreakColor, breakLineWidth, breakLineStyleInput)
+f_add_vertical_marker(breakMarkers, showIntradayTools and showMonthBreak and newMonth, maxBreakMarkers, monthBreakColor, breakLineWidth, breakLineStyleInput)
+f_add_vertical_marker(breakMarkers, showIntradayTools and showQuarterBreak and newQuarter, maxBreakMarkers, quarterBreakColor, breakLineWidth, breakLineStyleInput)
+f_add_vertical_marker(breakMarkers, showIntradayTools and showHalfYearBreak and newHalfYear, maxBreakMarkers, halfYearBreakColor, breakLineWidth, breakLineStyleInput)
+f_add_vertical_marker(breakMarkers, showIntradayTools and showYearBreak and newYear, maxBreakMarkers, yearBreakColor, breakLineWidth, breakLineStyleInput)
+
+f_trim_lines(breakMarkers, maxBreakMarkers)
+
+//------------------------------------------------------------------------------
+// Sessions
+//------------------------------------------------------------------------------
+
+asiaInSession    = showIntradayTools and showAsiaSession and f_in_session(asiaSession, asiaTimezone)
+londonInSession  = showIntradayTools and showLondonSession and f_in_session(londonSession, londonTimezone)
+newYorkInSession = showIntradayTools and showNewYorkSession and f_in_session(newYorkSession, newYorkTimezone)
+
+asiaStart    = f_session_start(asiaInSession)
+londonStart  = f_session_start(londonInSession)
+newYorkStart = f_session_start(newYorkInSession)
+
+inAnyMainSession = asiaInSession or londonInSession or newYorkInSession
+offSession = showIntradayTools and showOffSessionShading and not inAnyMainSession
+
+bgcolor(asiaInSession ? color.new(asiaColor, asiaTransparency) : na, title="Asia Session")
+bgcolor(londonInSession ? color.new(londonColor, londonTransparency) : na, title="London Session")
+bgcolor(newYorkInSession ? color.new(newYorkColor, newYorkTransparency) : na, title="New York Session")
+bgcolor(offSession ? color.new(offSessionColor, offSessionTransparency) : na, title="Off Session")
+
+var line[] sessionOpenLines = array.new_line()
+var label[] sessionLabels = array.new_label()
+
+f_add_vertical_marker(sessionOpenLines, asiaStart and showSessionOpenLine, maxSessionOpenLines, color.new(asiaColor, math.max(0, asiaTransparency - 35)), sessionLineWidth, sessionLineStyleInput)
+f_add_vertical_marker(sessionOpenLines, londonStart and showSessionOpenLine, maxSessionOpenLines, color.new(londonColor, math.max(0, londonTransparency - 35)), sessionLineWidth, sessionLineStyleInput)
+f_add_vertical_marker(sessionOpenLines, newYorkStart and showSessionOpenLine, maxSessionOpenLines, color.new(newYorkColor, math.max(0, newYorkTransparency - 35)), sessionLineWidth, sessionLineStyleInput)
+
+f_add_session_label(sessionLabels, asiaStart and showSessionLabel, maxSessionLabels, "Asia", color.new(asiaColor, 15), chart.fg_color)
+f_add_session_label(sessionLabels, londonStart and showSessionLabel, maxSessionLabels, "London", color.new(londonColor, 15), chart.fg_color)
+f_add_session_label(sessionLabels, newYorkStart and showSessionLabel, maxSessionLabels, "New York", color.new(newYorkColor, 15), chart.fg_color)
+
+f_trim_lines(sessionOpenLines, maxSessionOpenLines)
+f_trim_labels(sessionLabels, maxSessionLabels)

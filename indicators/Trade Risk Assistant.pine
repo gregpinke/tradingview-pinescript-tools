@@ -1,0 +1,180 @@
+//@version=6
+indicator("Trade Risk Assistant", shorttitle="Trade Risk Assistant", overlay=true)
+
+//------------------------------------------------------------------------------
+// Inputs
+//------------------------------------------------------------------------------
+
+groupAccount = "Account Settings"
+groupTrade   = "Trade Setup"
+groupDisplay = "Display"
+
+accountSizeInput = input.float(10000.0, "Account size", minval=0.0, step=100.0, group=groupAccount, tooltip="Total account size used as the base for risk calculations.")
+riskPercentInput = input.float(1.0, "Risk per trade (%)", minval=0.0, step=0.1, group=groupAccount, tooltip="Percentage of account size to risk on the trade.")
+
+directionInput    = input.string("Long", "Direction", options=["Long", "Short"], group=groupTrade)
+entryPriceInput   = input.price(0.0, "Entry price", group=groupTrade, tooltip="Planned entry price for the trade.")
+stopPriceInput    = input.price(0.0, "Stop price", group=groupTrade, tooltip="Protective stop price used to measure risk.")
+enableTargetInput = input.bool(true, "Enable target price", group=groupTrade)
+targetPriceInput  = input.price(0.0, "Target price", group=groupTrade, tooltip="Optional target used to estimate reward-to-risk.")
+
+showTableInput      = input.bool(true, "Show table", group=groupDisplay)
+tableCornerInput    = input.string("Top Right", "Table position", options=["Top Right", "Top Left", "Bottom Right", "Bottom Left"], group=groupDisplay)
+headerColorInput    = input.color(color.rgb(33, 37, 41), "Header color", group=groupDisplay)
+accentColorInput    = input.color(color.rgb(18, 97, 160), "Accent color", group=groupDisplay)
+warningColorInput   = input.color(color.rgb(184, 134, 11), "Warning color", group=groupDisplay)
+errorColorInput     = input.color(color.rgb(166, 50, 50), "Error color", group=groupDisplay)
+
+//------------------------------------------------------------------------------
+// Helpers
+//------------------------------------------------------------------------------
+
+f_table_position(positionText) =>
+    switch positionText
+        "Top Left" => position.top_left
+        "Bottom Right" => position.bottom_right
+        "Bottom Left" => position.bottom_left
+        => position.top_right
+
+f_format_number(value, decimals) =>
+    string pattern = switch decimals
+        0 => "0"
+        1 => "0.0"
+        2 => "0.00"
+        3 => "0.000"
+        => "0.0000"
+    na(value) ? "N/A" : str.tostring(value, pattern)
+
+f_format_price(value) =>
+    na(value) ? "N/A" : str.tostring(value, format.mintick)
+
+f_format_percent(value) =>
+    na(value) ? "N/A" : str.tostring(value, "0.00") + "%"
+
+f_safe_divide(numerator, denominator) =>
+    denominator == 0.0 ? na : numerator / denominator
+
+f_status_color(isError, hasWarning) =>
+    isError ? color.new(errorColorInput, 0) : hasWarning ? color.new(warningColorInput, 0) : color.new(accentColorInput, 0)
+
+f_create_table(tablePos) =>
+    table newTable = table.new(tablePos, 2, 13, border_width=1, frame_width=1, border_color=color.new(color.gray, 75), frame_color=color.new(color.gray, 75), bgcolor=color.new(color.white, 0))
+    table.merge_cells(newTable, 0, 0, 1, 0)
+    table.merge_cells(newTable, 0, 12, 1, 12)
+    newTable
+
+f_cell_pair(tableId, row, labelText, valueText, labelBg, valueBg, valueTextColor) =>
+    table.cell(tableId, 0, row, labelText, text_color=color.black, text_size=size.small, bgcolor=labelBg)
+    table.cell(tableId, 1, row, valueText, text_color=valueTextColor, text_size=size.small, bgcolor=valueBg)
+
+//------------------------------------------------------------------------------
+// Core calculations
+//------------------------------------------------------------------------------
+
+isLong = directionInput == "Long"
+
+riskAmount         = accountSizeInput * riskPercentInput / 100.0
+rawStopDistance    = entryPriceInput - stopPriceInput
+stopDistance       = math.abs(rawStopDistance)
+stopDistancePct    = f_safe_divide(stopDistance, math.abs(entryPriceInput)) * 100.0
+positionSize       = f_safe_divide(riskAmount, stopDistance)
+
+targetDistance = enableTargetInput ? (isLong ? targetPriceInput - entryPriceInput : entryPriceInput - targetPriceInput) : na
+rewardRiskRatio = enableTargetInput ? f_safe_divide(targetDistance, stopDistance) : na
+
+isAccountInvalid      = accountSizeInput <= 0
+isRiskPercentInvalid  = riskPercentInput <= 0
+isStopDistanceInvalid = stopDistance == 0.0
+stopDirectionWarning  = isLong ? stopPriceInput >= entryPriceInput : stopPriceInput <= entryPriceInput
+targetDirectionWarning = enableTargetInput ? (isLong ? targetPriceInput <= entryPriceInput : targetPriceInput >= entryPriceInput) : false
+isTargetDistanceInvalid = enableTargetInput and (na(targetDistance) or targetDistance <= 0)
+
+string statusMessage = "Ready"
+bool statusIsError = false
+bool statusHasWarning = false
+
+if isAccountInvalid
+    statusMessage := "Account size must be greater than zero"
+    statusIsError := true
+else if isRiskPercentInvalid
+    statusMessage := "Risk percent must be greater than zero"
+    statusIsError := true
+else if isStopDistanceInvalid
+    statusMessage := "Invalid stop distance"
+    statusIsError := true
+else if stopDirectionWarning and targetDirectionWarning
+    statusMessage := "Warning: stop and target do not align with selected direction"
+    statusHasWarning := true
+else if stopDirectionWarning
+    statusMessage := isLong ? "Warning: Long trades usually use a stop below entry" : "Warning: Short trades usually use a stop above entry"
+    statusHasWarning := true
+else if targetDirectionWarning
+    statusMessage := isLong ? "Warning: target should usually be above entry for Long trades" : "Warning: target should usually be below entry for Short trades"
+    statusHasWarning := true
+
+canShowPositionSize = not (isAccountInvalid or isRiskPercentInvalid or isStopDistanceInvalid)
+canShowTargetStats  = enableTargetInput and not isStopDistanceInvalid and not isTargetDistanceInvalid
+
+//------------------------------------------------------------------------------
+// Table rendering
+//------------------------------------------------------------------------------
+
+var table riskTable = na
+var string lastTableCorner = ""
+
+selectedPosition = f_table_position(tableCornerInput)
+shouldRecreateTable = na(riskTable) or lastTableCorner != tableCornerInput
+
+if shouldRecreateTable
+    if not na(riskTable)
+        table.delete(riskTable)
+    riskTable := f_create_table(selectedPosition)
+    lastTableCorner := tableCornerInput
+
+if barstate.islast and not na(riskTable)
+    table.clear(riskTable, 0, 0, 1, 12)
+    table.merge_cells(riskTable, 0, 0, 1, 0)
+    table.merge_cells(riskTable, 0, 12, 1, 12)
+
+    if showTableInput
+        headerBg   = color.new(headerColorInput, 0)
+        labelBg    = color.new(color.silver, 88)
+        valueBg    = color.new(color.white, 0)
+        statusBg   = color.new(f_status_color(statusIsError, statusHasWarning), 84)
+        statusText = statusIsError ? errorColorInput : statusHasWarning ? warningColorInput : color.white
+
+        table.cell(riskTable, 0, 0, "Trade Risk Assistant", text_color=color.white, text_size=size.normal, bgcolor=headerBg)
+
+        f_cell_pair(riskTable, 1, "Account size", f_format_number(accountSizeInput, 2), labelBg, valueBg, color.black)
+        f_cell_pair(riskTable, 2, "Risk per trade", f_format_percent(riskPercentInput), labelBg, valueBg, color.black)
+        f_cell_pair(riskTable, 3, "Risk amount", f_format_number(riskAmount, 2), labelBg, valueBg, color.black)
+        f_cell_pair(riskTable, 4, "Direction", directionInput, labelBg, valueBg, color.black)
+        f_cell_pair(riskTable, 5, "Entry", f_format_price(entryPriceInput), labelBg, valueBg, color.black)
+        f_cell_pair(riskTable, 6, "Stop", f_format_price(stopPriceInput), labelBg, valueBg, stopDirectionWarning and not isStopDistanceInvalid ? warningColorInput : color.black)
+        f_cell_pair(riskTable, 7, "Stop distance", isStopDistanceInvalid ? "Invalid stop distance" : f_format_price(stopDistance), labelBg, valueBg, isStopDistanceInvalid ? errorColorInput : color.black)
+        f_cell_pair(riskTable, 8, "Stop distance %", isStopDistanceInvalid ? "N/A" : f_format_percent(stopDistancePct), labelBg, valueBg, color.black)
+        f_cell_pair(riskTable, 9, "Position size", canShowPositionSize ? f_format_number(positionSize, 2) : "N/A", labelBg, valueBg, canShowPositionSize ? color.black : errorColorInput)
+
+        targetValueText = enableTargetInput ? f_format_price(targetPriceInput) : "Off"
+        targetValueColor = enableTargetInput and targetDirectionWarning ? warningColorInput : color.black
+        f_cell_pair(riskTable, 10, "Target", targetValueText, labelBg, valueBg, targetValueColor)
+
+        rewardRiskText = not enableTargetInput ? "Off" : canShowTargetStats ? str.tostring(rewardRiskRatio, "0.00") + " R" : "N/A"
+        rewardRiskColor = not enableTargetInput ? color.gray : canShowTargetStats ? color.black : targetDirectionWarning ? warningColorInput : errorColorInput
+        f_cell_pair(riskTable, 11, "Reward : Risk", rewardRiskText, labelBg, valueBg, rewardRiskColor)
+
+        table.cell(riskTable, 0, 12, statusMessage, text_color=statusText, text_size=size.small, bgcolor=statusBg)
+
+        if not statusIsError and not statusHasWarning
+            table.cell_set_text_color(riskTable, 0, 12, color.white)
+
+//------------------------------------------------------------------------------
+// Usage note
+//------------------------------------------------------------------------------
+
+// How to use:
+// 1. Enter your account size and preferred percentage risk in Account Settings.
+// 2. Set the trade direction, then enter the intended entry and stop prices in Trade Setup.
+// 3. Optionally enable a target price to estimate reward-to-risk.
+// 4. Use the table to read the risk amount, stop distance, and position size.
+// 5. If a warning appears, review the entry, stop, target, or direction before placing the trade.

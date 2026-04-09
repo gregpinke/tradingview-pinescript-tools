@@ -1,0 +1,543 @@
+//@version=6
+indicator("Initiative Displacement Detector", "Initiative Displacement", overlay = true, max_boxes_count = 500, max_lines_count = 500, max_labels_count = 500)
+
+//------------------------------------------------------------------------------
+// Inputs
+//------------------------------------------------------------------------------
+atrLength = input.int(14, "ATR Length", minval = 1)
+preCompressionLookback = input.int(8, "Pre-Compression Lookback", minval = 5, maxval = 20)
+legWindowMaxBars = input.int(4, "Leg Window Max Bars", minval = 1, maxval = 4)
+acceptanceLookaheadBars = input.int(2, "Acceptance Lookahead Bars", minval = 1, maxval = 3)
+candidateSearchBars = input.int(3, "Recent Candidate Search Bars", minval = 1, maxval = 10)
+compressionBaselineLength = input.int(24, "Compression Baseline Length", minval = 10, maxval = 100)
+contextRangeLookback = input.int(20, "Context Range Lookback", minval = 8, maxval = 100)
+extensionLookback = input.int(12, "Exhaustion Extension Lookback", minval = 4, maxval = 50)
+
+minDisplacementAtr = input.float(1.20, "Minimum Displacement Threshold (ATR)", minval = 0.1, step = 0.05)
+minEfficiency = input.float(0.55, "Minimum Efficiency Threshold", minval = 0.1, maxval = 1.0, step = 0.01)
+useVolume = input.bool(true, "Use Volume In Participation Score")
+showOnlyIgnition = input.bool(false, "Show Only Ignition Signals")
+showComponentBreakdown = input.bool(false, "Show Component Breakdown In Label")
+showCompressionZone = input.bool(true, "Show Compression Zone")
+showLegBox = input.bool(true, "Show Impulse Leg Box")
+showDebugTable = input.bool(false, "Show Debug Table")
+showDiagnostics = input.bool(false, "Show Diagnostics")
+diagnosticBypassBestFilter = input.bool(false, "Diagnostics: Bypass Best-Recent Filter")
+backtestMode = input.bool(false, "Backtest Mode (show many historical signals)")
+maxDrawnSignals = input.int(25, "Maximum Historical Signals", minval = 5, maxval = 50)
+maxBacktestSignals = input.int(300, "Max Signals In Backtest Mode", minval = 50, maxval = 500)
+
+ignitionThreshold = input.int(80, "Ignition Threshold", minval = 50, maxval = 100)
+reactiveThreshold = input.int(60, "Reactive Threshold", minval = 30, maxval = 95)
+
+//------------------------------------------------------------------------------
+// Constants and helpers
+//------------------------------------------------------------------------------
+WEIGHT_COMPRESSION = 18.0
+WEIGHT_DISPLACEMENT = 24.0
+WEIGHT_EFFICIENCY = 18.0
+WEIGHT_ACCEPTANCE = 16.0
+WEIGHT_PARTICIPATION = 8.0
+WEIGHT_CONTEXT = 16.0
+WEIGHT_TOTAL = WEIGHT_COMPRESSION + WEIGHT_DISPLACEMENT + WEIGHT_EFFICIENCY + WEIGHT_ACCEPTANCE + WEIGHT_PARTICIPATION + WEIGHT_CONTEXT
+
+CLASS_WEAK = 0
+CLASS_REACTIVE = 1
+CLASS_IGNITION = 2
+CLASS_EXHAUSTION = 3
+
+atr = ta.atr(atrLength)
+
+f_safeDiv(float numerator, float denominator) =>
+    denominator == 0.0 ? 0.0 : numerator / denominator
+
+f_clamp(float value, float minValue, float maxValue) =>
+    math.max(minValue, math.min(maxValue, value))
+
+f_normalize(float value, float minBound, float maxBound) =>
+    f_clamp(f_safeDiv(value - minBound, maxBound - minBound), 0.0, 1.0)
+
+f_score(float ratio) =>
+    math.round(f_clamp(ratio, 0.0, 1.0) * 100.0)
+
+f_barRangeAt(int offset) =>
+    math.max(high[offset] - low[offset], syminfo.mintick)
+
+f_bodyAt(int offset) =>
+    math.abs(close[offset] - open[offset])
+
+f_sumTrueRange(int startOffset, int barsCount) =>
+    float total = 0.0
+    for i = 0 to barsCount - 1
+        total += ta.tr(true)[startOffset - i]
+    total
+
+f_legHigh(int endOffset, int legBars) =>
+    ta.highest(high, legBars)[endOffset]
+
+f_legLow(int endOffset, int legBars) =>
+    ta.lowest(low, legBars)[endOffset]
+
+f_legStartOffset(int endOffset, int legBars) =>
+    endOffset + legBars - 1
+
+f_overlapRatio(float highA, float lowA, float highB, float lowB) =>
+    float overlap = math.max(0.0, math.min(highA, highB) - math.max(lowA, lowB))
+    float span = math.max(math.max(highA, highB) - math.min(lowA, lowB), syminfo.mintick)
+    overlap / span
+
+f_overlapSeries(int startOffset, int barsCount) =>
+    float total = 0.0
+    int pairs = 0
+    for i = 0 to barsCount - 2
+        int offA = startOffset - i
+        int offB = startOffset - i - 1
+        if offB >= 0
+            total += f_overlapRatio(high[offA], low[offA], high[offB], low[offB])
+            pairs += 1
+    pairs == 0 ? 0.0 : total / pairs
+
+f_compressionScore(int startOffset, int lookbackBars) =>
+    int endOffset = startOffset + lookbackBars - 1
+    float recentAtr = ta.sma(ta.tr(true), lookbackBars)[startOffset]
+    float baselineAtr = ta.sma(ta.tr(true), compressionBaselineLength)[startOffset]
+    float recentRange = ta.highest(high, lookbackBars)[startOffset] - ta.lowest(low, lookbackBars)[startOffset]
+    float bodyAvg = ta.sma(math.abs(close - open), lookbackBars)[startOffset]
+    float overlap = f_overlapSeries(endOffset, lookbackBars)
+    float atrCompression = 1.0 - f_normalize(f_safeDiv(recentAtr, math.max(baselineAtr, syminfo.mintick)), 0.65, 1.30)
+    float rangeCompression = 1.0 - f_normalize(f_safeDiv(recentRange, math.max(baselineAtr * math.sqrt(lookbackBars), syminfo.mintick)), 0.90, 2.00)
+    float bodyCompression = 1.0 - f_normalize(f_safeDiv(bodyAvg, math.max(recentAtr, syminfo.mintick)), 0.40, 1.00)
+    float overlapCompression = f_normalize(overlap, 0.20, 0.80)
+    f_score((atrCompression + rangeCompression + bodyCompression + overlapCompression) / 4.0)
+
+f_displacementScore(int endOffset, int legBars, int dir) =>
+    int startOffset = f_legStartOffset(endOffset, legBars)
+    float legHigh = f_legHigh(endOffset, legBars)
+    float legLow = f_legLow(endOffset, legBars)
+    float legRange = math.max(legHigh - legLow, syminfo.mintick)
+    float netMove = dir == 1 ? close[endOffset] - open[startOffset] : open[startOffset] - close[endOffset]
+    float atrRef = math.max(atr[endOffset], syminfo.mintick)
+    float rangeAtr = legRange / atrRef
+    float netAtr = netMove / atrRef
+    float bodyDominance = f_safeDiv(math.abs(close[endOffset] - open[startOffset]), legRange)
+    float overlapPenalty = f_overlapSeries(startOffset, legBars)
+    float speed = legRange / math.max(legBars, 1)
+    float displacementCore = f_normalize(math.max(rangeAtr, netAtr), minDisplacementAtr * 0.75, minDisplacementAtr * 2.20)
+    float bodyCore = f_normalize(bodyDominance, 0.35, 0.90)
+    float overlapCore = 1.0 - f_normalize(overlapPenalty, 0.15, 0.70)
+    float speedCore = f_normalize(f_safeDiv(speed, atrRef), 0.30, 1.10)
+    f_score((displacementCore * 0.40) + (bodyCore * 0.25) + (overlapCore * 0.20) + (speedCore * 0.15))
+
+f_displacementAtrRaw(int endOffset, int legBars, int dir) =>
+    int startOffset = f_legStartOffset(endOffset, legBars)
+    float legRange = math.max(f_legHigh(endOffset, legBars) - f_legLow(endOffset, legBars), syminfo.mintick)
+    float netMove = dir == 1 ? close[endOffset] - open[startOffset] : open[startOffset] - close[endOffset]
+    float atrRef = math.max(atr[endOffset], syminfo.mintick)
+    math.max(legRange / atrRef, netMove / atrRef)
+
+f_efficiencyScore(int endOffset, int legBars, int dir) =>
+    int startOffset = f_legStartOffset(endOffset, legBars)
+    float netMove = math.abs(close[endOffset] - open[startOffset])
+    float cumulativeTr = math.max(f_sumTrueRange(startOffset, legBars), syminfo.mintick)
+    float efficiency = netMove / cumulativeTr
+    float closeQuality = dir == 1 ? f_safeDiv(close[endOffset] - low[endOffset], f_barRangeAt(endOffset)) : f_safeDiv(high[endOffset] - close[endOffset], f_barRangeAt(endOffset))
+    f_score((f_normalize(efficiency, minEfficiency * 0.65, 0.95) * 0.75) + (f_normalize(closeQuality, 0.45, 0.90) * 0.25))
+
+f_efficiencyRaw(int endOffset, int legBars) =>
+    int startOffset = f_legStartOffset(endOffset, legBars)
+    float netMove = math.abs(close[endOffset] - open[startOffset])
+    float cumulativeTr = math.max(f_sumTrueRange(startOffset, legBars), syminfo.mintick)
+    netMove / cumulativeTr
+
+f_acceptanceScore(int endOffset, int legBars, int dir, int lookaheadBars) =>
+    int startOffset = f_legStartOffset(endOffset, legBars)
+    float legHigh = f_legHigh(endOffset, legBars)
+    float legLow = f_legLow(endOffset, legBars)
+    float legHeight = math.max(legHigh - legLow, syminfo.mintick)
+    float originPrice = open[startOffset]
+    float noDeepRetraceLevel = dir == 1 ? legLow + legHeight * 0.35 : legHigh - legHeight * 0.35
+    float holdScore = 0.0
+    float retracePenalty = 0.0
+    float oppositePenalty = 0.0
+    for i = 1 to lookaheadBars
+        int off = endOffset - i
+        float closePos = dir == 1 ? f_safeDiv(close[off] - legLow, legHeight) : f_safeDiv(legHigh - close[off], legHeight)
+        float minPos = dir == 1 ? f_safeDiv(low[off] - legLow, legHeight) : f_safeDiv(legHigh - high[off], legHeight)
+        float retraceHit = dir == 1 ? (low[off] < noDeepRetraceLevel ? 1.0 : 0.0) : (high[off] > noDeepRetraceLevel ? 1.0 : 0.0)
+        float originHit = dir == 1 ? (low[off] <= originPrice ? 1.0 : 0.0) : (high[off] >= originPrice ? 1.0 : 0.0)
+        float oppositeBar = dir == 1 ? math.max(open[off] - close[off], 0.0) : math.max(close[off] - open[off], 0.0)
+        holdScore += f_clamp((closePos + minPos) * 0.5, 0.0, 1.0)
+        retracePenalty += retraceHit * 0.45 + originHit * 0.75
+        oppositePenalty += f_normalize(f_safeDiv(oppositeBar, math.max(atr[off], syminfo.mintick)), 0.35, 1.20)
+    float holdAvg = holdScore / lookaheadBars
+    float retraceAvg = retracePenalty / lookaheadBars
+    float oppositeAvg = oppositePenalty / lookaheadBars
+    float scoreRatio = (holdAvg * 0.65) + ((1.0 - f_clamp(retraceAvg, 0.0, 1.0)) * 0.25) + ((1.0 - f_clamp(oppositeAvg, 0.0, 1.0)) * 0.10)
+    f_score(scoreRatio)
+
+f_participationScore(int endOffset, int legBars) =>
+    int startOffset = f_legStartOffset(endOffset, legBars)
+    float legVolume = math.sum(volume, legBars)[endOffset]
+    float baselineVolume = ta.sma(volume, math.max(preCompressionLookback, 5))[startOffset] * legBars
+    float concentration = ta.highest(volume, legBars)[endOffset]
+    if not useVolume or na(volume[endOffset]) or volume[endOffset] == 0 or na(legVolume) or na(baselineVolume) or na(concentration)
+        50
+    else
+        float concentrationRatio = f_safeDiv(concentration, math.max(legVolume, 1.0))
+        float ratioScore = f_normalize(f_safeDiv(legVolume, math.max(baselineVolume, 1.0)), 0.90, 1.90)
+        float concentrationScore = f_normalize(concentrationRatio, 0.25, 0.65)
+        f_score((ratioScore * 0.75) + (concentrationScore * 0.25))
+
+f_contextScore(int endOffset, int legBars, int dir) =>
+    int startOffset = f_legStartOffset(endOffset, legBars)
+    float preHigh = ta.highest(high, contextRangeLookback)[startOffset]
+    float preLow = ta.lowest(low, contextRangeLookback)[startOffset]
+    float legHigh = f_legHigh(endOffset, legBars)
+    float legLow = f_legLow(endOffset, legBars)
+    float preRange = math.max(preHigh - preLow, syminfo.mintick)
+    float breakoutDistance = dir == 1 ? math.max(legHigh - preHigh, 0.0) : math.max(preLow - legLow, 0.0)
+    float breakoutScore = f_normalize(f_safeDiv(breakoutDistance, math.max(atr[endOffset], syminfo.mintick)), 0.15, 1.10)
+    float originEdge = dir == 1 ? f_safeDiv(open[startOffset] - preLow, preRange) : f_safeDiv(preHigh - open[startOffset], preRange)
+    float edgeScore = 1.0 - f_normalize(originEdge, 0.35, 0.85)
+    float closeOutside = dir == 1 ? (close[endOffset] > preHigh ? 1.0 : 0.0) : (close[endOffset] < preLow ? 1.0 : 0.0)
+    f_score((breakoutScore * 0.55) + (edgeScore * 0.20) + (closeOutside * 0.25))
+
+f_exhaustionPenalty(int endOffset, int legBars, int dir, int compressionScore, int acceptanceScore, int contextScore) =>
+    int startOffset = f_legStartOffset(endOffset, legBars)
+    float preMove = dir == 1 ? close[startOffset] - close[startOffset + extensionLookback] : close[startOffset + extensionLookback] - close[startOffset]
+    float preMoveAtr = f_safeDiv(preMove, math.max(atr[startOffset], syminfo.mintick))
+    float extendedPenalty = f_normalize(preMoveAtr, 1.40, 3.20)
+    float wickPenalty = 1.0 - f_normalize(dir == 1 ? f_safeDiv(close[endOffset] - low[endOffset], f_barRangeAt(endOffset)) : f_safeDiv(high[endOffset] - close[endOffset], f_barRangeAt(endOffset)), 0.45, 0.85)
+    float compressionPenalty = 1.0 - f_normalize(compressionScore, 40.0, 80.0)
+    float acceptancePenalty = 1.0 - f_normalize(acceptanceScore, 50.0, 80.0)
+    float contextPenalty = 1.0 - f_normalize(contextScore, 45.0, 75.0)
+    int penalty = math.round((extendedPenalty * 0.35 + wickPenalty * 0.20 + compressionPenalty * 0.20 + acceptancePenalty * 0.15 + contextPenalty * 0.10) * 22.0)
+    int(math.round(f_clamp(penalty, 0.0, 22.0)))
+
+f_classification(int totalScore, int acceptanceScore, int compressionScore, int penalty) =>
+    penalty >= 12 and (acceptanceScore < 55 or compressionScore < 45) ? CLASS_EXHAUSTION :
+     totalScore >= ignitionThreshold ? CLASS_IGNITION :
+     totalScore >= reactiveThreshold ? CLASS_REACTIVE : CLASS_WEAK
+
+f_classText(int classId) =>
+    classId == CLASS_IGNITION ? "Ignition" : classId == CLASS_REACTIVE ? "Reactive" : classId == CLASS_EXHAUSTION ? "Exhaustion" : "Weak"
+
+f_directionText(int dir) =>
+    dir == 1 ? "Bull" : "Bear"
+
+f_totalScore(int compressionScore, int displacementScore, int efficiencyScore, int acceptanceScore, int participationScore, int contextScore) =>
+    math.round(((compressionScore * WEIGHT_COMPRESSION) + (displacementScore * WEIGHT_DISPLACEMENT) + (efficiencyScore * WEIGHT_EFFICIENCY) + (acceptanceScore * WEIGHT_ACCEPTANCE) + (participationScore * WEIGHT_PARTICIPATION) + (contextScore * WEIGHT_CONTEXT)) / WEIGHT_TOTAL)
+
+f_candidatePack(int endOffset, int legBars) =>
+    int startOffset = f_legStartOffset(endOffset, legBars)
+    float netMove = close[endOffset] - open[startOffset]
+    int dir = netMove >= 0 ? 1 : -1
+    float legHighCandidate = f_legHigh(endOffset, legBars)
+    float legLowCandidate = f_legLow(endOffset, legBars)
+    float preHighCandidate = ta.highest(high, preCompressionLookback)[startOffset + 1]
+    float preLowCandidate = ta.lowest(low, preCompressionLookback)[startOffset + 1]
+    float dispAtrRawCandidate = f_displacementAtrRaw(endOffset, legBars, dir)
+    float efficiencyRawCandidate = f_efficiencyRaw(endOffset, legBars)
+    int compressionScore = f_compressionScore(startOffset + 1, preCompressionLookback)
+    int displacementScore = f_displacementScore(endOffset, legBars, dir)
+    int efficiencyScore = f_efficiencyScore(endOffset, legBars, dir)
+    int acceptanceScore = f_acceptanceScore(endOffset, legBars, dir, acceptanceLookaheadBars)
+    int participationScore = f_participationScore(endOffset, legBars)
+    int contextScore = f_contextScore(endOffset, legBars, dir)
+    int totalRaw = f_totalScore(compressionScore, displacementScore, efficiencyScore, acceptanceScore, participationScore, contextScore)
+    int penalty = f_exhaustionPenalty(endOffset, legBars, dir, compressionScore, acceptanceScore, contextScore)
+    int totalScore = math.max(totalRaw - penalty, 0)
+    bool candidateReady = bar_index > startOffset + extensionLookback and not na(atr[endOffset]) and not na(legHighCandidate) and not na(legLowCandidate) and not na(preHighCandidate) and not na(preLowCandidate) and not na(dispAtrRawCandidate) and not na(efficiencyRawCandidate)
+    [candidateReady, totalScore, compressionScore, displacementScore, efficiencyScore, acceptanceScore, participationScore, contextScore, penalty, dir, legBars, legHighCandidate, legLowCandidate, preHighCandidate, preLowCandidate, dispAtrRawCandidate, efficiencyRawCandidate]
+
+//------------------------------------------------------------------------------
+// Candidate evaluation
+//------------------------------------------------------------------------------
+int freshestEndOffset = acceptanceLookaheadBars
+int freshestTotal = na
+int freshestCompression = na
+int freshestDisplacement = na
+int freshestEfficiency = na
+int freshestAcceptance = na
+int freshestParticipation = na
+int freshestContext = na
+int freshestPenalty = na
+int freshestClass = na
+int freshestDir = na
+int freshestLegBars = na
+int freshestEndBar = na
+int freshestStartBar = na
+float freshestLegHigh = na
+float freshestLegLow = na
+float freshestPreHigh = na
+float freshestPreLow = na
+float freshestDispAtrRaw = na
+float freshestEfficiencyRaw = na
+float freshestOriginPrice = na
+float freshestEndPrice = na
+float freshestAtrAtSignal = na
+
+[ready1, total1, compression1, displacement1, efficiency1, acceptance1, participation1, context1, penalty1, dir1, legBars1, legHigh1, legLow1, preHigh1, preLow1, dispAtrRaw1, efficiencyRaw1] = f_candidatePack(freshestEndOffset, 1)
+[ready2, total2, compression2, displacement2, efficiency2, acceptance2, participation2, context2, penalty2, dir2, legBars2, legHigh2, legLow2, preHigh2, preLow2, dispAtrRaw2, efficiencyRaw2] = f_candidatePack(freshestEndOffset, 2)
+[ready3, total3, compression3, displacement3, efficiency3, acceptance3, participation3, context3, penalty3, dir3, legBars3, legHigh3, legLow3, preHigh3, preLow3, dispAtrRaw3, efficiencyRaw3] = f_candidatePack(freshestEndOffset, 3)
+[ready4, total4, compression4, displacement4, efficiency4, acceptance4, participation4, context4, penalty4, dir4, legBars4, legHigh4, legLow4, preHigh4, preLow4, dispAtrRaw4, efficiencyRaw4] = f_candidatePack(freshestEndOffset, 4)
+
+float bestForEnd = -1.0
+if legWindowMaxBars >= 1 and ready1 and total1 > bestForEnd
+    bestForEnd := total1
+    freshestCompression := compression1
+    freshestDisplacement := displacement1
+    freshestEfficiency := efficiency1
+    freshestAcceptance := acceptance1
+    freshestParticipation := participation1
+    freshestContext := context1
+    freshestPenalty := penalty1
+    freshestClass := f_classification(total1, acceptance1, compression1, penalty1)
+    freshestDir := dir1
+    freshestLegBars := legBars1
+    freshestLegHigh := legHigh1
+    freshestLegLow := legLow1
+    freshestPreHigh := preHigh1
+    freshestPreLow := preLow1
+    freshestDispAtrRaw := dispAtrRaw1
+    freshestEfficiencyRaw := efficiencyRaw1
+if legWindowMaxBars >= 2 and ready2 and total2 > bestForEnd
+    bestForEnd := total2
+    freshestCompression := compression2
+    freshestDisplacement := displacement2
+    freshestEfficiency := efficiency2
+    freshestAcceptance := acceptance2
+    freshestParticipation := participation2
+    freshestContext := context2
+    freshestPenalty := penalty2
+    freshestClass := f_classification(total2, acceptance2, compression2, penalty2)
+    freshestDir := dir2
+    freshestLegBars := legBars2
+    freshestLegHigh := legHigh2
+    freshestLegLow := legLow2
+    freshestPreHigh := preHigh2
+    freshestPreLow := preLow2
+    freshestDispAtrRaw := dispAtrRaw2
+    freshestEfficiencyRaw := efficiencyRaw2
+if legWindowMaxBars >= 3 and ready3 and total3 > bestForEnd
+    bestForEnd := total3
+    freshestCompression := compression3
+    freshestDisplacement := displacement3
+    freshestEfficiency := efficiency3
+    freshestAcceptance := acceptance3
+    freshestParticipation := participation3
+    freshestContext := context3
+    freshestPenalty := penalty3
+    freshestClass := f_classification(total3, acceptance3, compression3, penalty3)
+    freshestDir := dir3
+    freshestLegBars := legBars3
+    freshestLegHigh := legHigh3
+    freshestLegLow := legLow3
+    freshestPreHigh := preHigh3
+    freshestPreLow := preLow3
+    freshestDispAtrRaw := dispAtrRaw3
+    freshestEfficiencyRaw := efficiencyRaw3
+if legWindowMaxBars >= 4 and ready4 and total4 > bestForEnd
+    bestForEnd := total4
+    freshestCompression := compression4
+    freshestDisplacement := displacement4
+    freshestEfficiency := efficiency4
+    freshestAcceptance := acceptance4
+    freshestParticipation := participation4
+    freshestContext := context4
+    freshestPenalty := penalty4
+    freshestClass := f_classification(total4, acceptance4, compression4, penalty4)
+    freshestDir := dir4
+    freshestLegBars := legBars4
+    freshestLegHigh := legHigh4
+    freshestLegLow := legLow4
+    freshestPreHigh := preHigh4
+    freshestPreLow := preLow4
+    freshestDispAtrRaw := dispAtrRaw4
+    freshestEfficiencyRaw := efficiencyRaw4
+
+if bestForEnd >= 0
+    freshestTotal := math.round(bestForEnd)
+    freshestEndBar := bar_index - freshestEndOffset
+    freshestStartBar := freshestEndBar - freshestLegBars + 1
+    freshestOriginPrice := open[freshestEndOffset + freshestLegBars - 1]
+    freshestEndPrice := close[freshestEndOffset]
+    freshestAtrAtSignal := atr[freshestEndOffset]
+
+float rollingBestRecent = ta.highest(nz(float(freshestTotal), 0.0), candidateSearchBars)
+bool passesCoreThresholds = not na(freshestDispAtrRaw) and not na(freshestEfficiencyRaw) and freshestDispAtrRaw >= minDisplacementAtr and freshestEfficiencyRaw >= minEfficiency
+bool freshestIsBest = not na(freshestTotal) and freshestTotal >= rollingBestRecent
+bool classificationVisible = not na(freshestClass) and (not showOnlyIgnition or freshestClass == CLASS_IGNITION)
+bool signalConfirmed = (diagnosticBypassBestFilter or freshestIsBest) and passesCoreThresholds and classificationVisible and freshestClass != CLASS_WEAK
+
+//------------------------------------------------------------------------------
+// Visual state
+//------------------------------------------------------------------------------
+var int lastSignalEndBar = na
+var signalLines = array.new_line()
+var signalBoxes = array.new_box()
+var compressionBoxes = array.new_box()
+var signalLabels = array.new_label()
+var originLabels = array.new_label()
+var endLabels = array.new_label()
+var debugTable = table.new(position.top_right, 2, 16, bgcolor = color.new(color.black, 72))
+var signalStartBars = array.new_int()
+var signalEndBars = array.new_int()
+var signalDirs = array.new_int()
+var signalClasses = array.new_int()
+var signalScores = array.new_int()
+var signalOriginPrices = array.new_float()
+var signalEndPrices = array.new_float()
+var signalLegHighs = array.new_float()
+var signalLegLows = array.new_float()
+var signalPreHighs = array.new_float()
+var signalPreLows = array.new_float()
+var signalAtrs = array.new_float()
+
+f_trimObjects() =>
+    int trimLimit = backtestMode ? maxBacktestSignals : maxDrawnSignals
+    while array.size(signalLines) > trimLimit
+        line.delete(array.shift(signalLines))
+    while array.size(signalBoxes) > trimLimit
+        box.delete(array.shift(signalBoxes))
+    while array.size(compressionBoxes) > trimLimit
+        box.delete(array.shift(compressionBoxes))
+    while array.size(signalLabels) > trimLimit
+        label.delete(array.shift(signalLabels))
+    while array.size(originLabels) > trimLimit
+        label.delete(array.shift(originLabels))
+    while array.size(endLabels) > trimLimit
+        label.delete(array.shift(endLabels))
+    while array.size(signalStartBars) > trimLimit
+        array.shift(signalStartBars)
+    while array.size(signalEndBars) > trimLimit
+        array.shift(signalEndBars)
+    while array.size(signalDirs) > trimLimit
+        array.shift(signalDirs)
+    while array.size(signalClasses) > trimLimit
+        array.shift(signalClasses)
+    while array.size(signalScores) > trimLimit
+        array.shift(signalScores)
+    while array.size(signalOriginPrices) > trimLimit
+        array.shift(signalOriginPrices)
+    while array.size(signalEndPrices) > trimLimit
+        array.shift(signalEndPrices)
+    while array.size(signalLegHighs) > trimLimit
+        array.shift(signalLegHighs)
+    while array.size(signalLegLows) > trimLimit
+        array.shift(signalLegLows)
+    while array.size(signalPreHighs) > trimLimit
+        array.shift(signalPreHighs)
+    while array.size(signalPreLows) > trimLimit
+        array.shift(signalPreLows)
+    while array.size(signalAtrs) > trimLimit
+        array.shift(signalAtrs)
+
+f_classColor(int classId, int dir) =>
+    classId == CLASS_IGNITION ? (dir == 1 ? color.new(color.lime, 0) : color.new(color.red, 0)) :
+     classId == CLASS_REACTIVE ? (dir == 1 ? color.new(color.teal, 0) : color.new(color.orange, 0)) :
+     color.new(color.gray, 0)
+
+f_drawSignal(int startBar, int endBar, float originPrice, float endPrice, float legHigh, float legLow, float preHigh, float preLow, int dir, int classId, int totalScore, int compressionScore, int displacementScore, int efficiencyScore, int acceptanceScore, int participationScore, int contextScore, int penaltyScore, float atrAtSignal) =>
+    color classColor = f_classColor(classId, dir)
+    color fillColor = color.new(classColor, 86)
+    float labelPadding = math.max(nz(atrAtSignal, 0.0) * 0.35, syminfo.mintick * 8.0)
+    float infoY = dir == 1 ? legHigh + labelPadding : legLow - labelPadding
+    line legLine = line.new(startBar, originPrice, endBar, endPrice, xloc = xloc.bar_index, extend = extend.none, color = classColor, width = classId == CLASS_IGNITION ? 2 : 1)
+    array.push(signalLines, legLine)
+    if showLegBox
+        box impulseBox = box.new(startBar, legHigh, endBar, legLow, xloc = xloc.bar_index, bgcolor = fillColor, border_color = color.new(classColor, 30))
+        array.push(signalBoxes, impulseBox)
+    if showCompressionZone
+        int preLeftBar = startBar - preCompressionLookback
+        int preRightBar = startBar - 1
+        box compressionBox = box.new(preLeftBar, preHigh, preRightBar, preLow, xloc = xloc.bar_index, bgcolor = color.new(color.silver, 90), border_color = color.new(color.gray, 55))
+        array.push(compressionBoxes, compressionBox)
+    label originMarker = label.new(startBar, originPrice, "O", xloc = xloc.bar_index, yloc = yloc.price, style = label.style_circle, color = color.new(classColor, 18), textcolor = color.white, size = size.tiny)
+    label endMarker = label.new(endBar, endPrice, dir == 1 ? "B" : "S", xloc = xloc.bar_index, yloc = yloc.price, style = label.style_circle, color = classColor, textcolor = color.white, size = size.tiny)
+    array.push(originLabels, originMarker)
+    array.push(endLabels, endMarker)
+    string labelText = f_classText(classId) + " " + f_directionText(dir) + " " + str.tostring(totalScore)
+    if showComponentBreakdown
+        labelText += "\nCpr " + str.tostring(compressionScore) + " Disp " + str.tostring(displacementScore) + " Eff " + str.tostring(efficiencyScore)
+        labelText += "\nAcc " + str.tostring(acceptanceScore) + " Part " + str.tostring(participationScore) + " Ctx " + str.tostring(contextScore) + " Pen " + str.tostring(penaltyScore)
+    label infoLabel = label.new(endBar, infoY, labelText, xloc = xloc.bar_index, yloc = yloc.price, style = dir == 1 ? label.style_label_down : label.style_label_up, color = color.new(classColor, 8), textcolor = color.white, size = size.small)
+    array.push(signalLabels, infoLabel)
+
+bool drawGateOpen = signalConfirmed and not na(freshestEndBar) and (na(lastSignalEndBar) or freshestEndBar != lastSignalEndBar)
+
+if drawGateOpen
+    array.push(signalStartBars, freshestStartBar)
+    array.push(signalEndBars, freshestEndBar)
+    array.push(signalDirs, freshestDir)
+    array.push(signalClasses, freshestClass)
+    array.push(signalScores, freshestTotal)
+    array.push(signalOriginPrices, freshestOriginPrice)
+    array.push(signalEndPrices, freshestEndPrice)
+    array.push(signalLegHighs, freshestLegHigh)
+    array.push(signalLegLows, freshestLegLow)
+    array.push(signalPreHighs, freshestPreHigh)
+    array.push(signalPreLows, freshestPreLow)
+    array.push(signalAtrs, freshestAtrAtSignal)
+    f_drawSignal(freshestStartBar, freshestEndBar, freshestOriginPrice, freshestEndPrice, freshestLegHigh, freshestLegLow, freshestPreHigh, freshestPreLow, freshestDir, freshestClass, freshestTotal, freshestCompression, freshestDisplacement, freshestEfficiency, freshestAcceptance, freshestParticipation, freshestContext, freshestPenalty, freshestAtrAtSignal)
+    f_trimObjects()
+    lastSignalEndBar := freshestEndBar
+
+//------------------------------------------------------------------------------
+// Debug table
+//------------------------------------------------------------------------------
+if (showDebugTable or showDiagnostics) and barstate.islast
+    table.cell(debugTable, 0, 0, "Field", text_color = color.white, bgcolor = color.new(color.gray, 70))
+    table.cell(debugTable, 1, 0, "Value", text_color = color.white, bgcolor = color.new(color.gray, 70))
+    table.cell(debugTable, 0, 1, "Best Recent", text_color = color.white)
+    table.cell(debugTable, 1, 1, na(rollingBestRecent) ? "na" : str.tostring(math.round(rollingBestRecent)), text_color = color.white)
+    table.cell(debugTable, 0, 2, "Fresh Total", text_color = color.white)
+    table.cell(debugTable, 1, 2, na(freshestTotal) ? "na" : str.tostring(freshestTotal), text_color = color.white)
+    table.cell(debugTable, 0, 3, "Class", text_color = color.white)
+    table.cell(debugTable, 1, 3, na(freshestClass) ? "na" : f_classText(freshestClass), text_color = color.white)
+    table.cell(debugTable, 0, 4, "Direction", text_color = color.white)
+    table.cell(debugTable, 1, 4, na(freshestDir) ? "na" : f_directionText(freshestDir), text_color = color.white)
+    table.cell(debugTable, 0, 5, "Compression", text_color = color.white)
+    table.cell(debugTable, 1, 5, na(freshestCompression) ? "na" : str.tostring(freshestCompression), text_color = color.white)
+    table.cell(debugTable, 0, 6, "Displacement", text_color = color.white)
+    table.cell(debugTable, 1, 6, na(freshestDisplacement) ? "na" : str.tostring(freshestDisplacement), text_color = color.white)
+    table.cell(debugTable, 0, 7, "Efficiency", text_color = color.white)
+    table.cell(debugTable, 1, 7, na(freshestEfficiency) ? "na" : str.tostring(freshestEfficiency), text_color = color.white)
+    table.cell(debugTable, 0, 8, "Acceptance", text_color = color.white)
+    table.cell(debugTable, 1, 8, na(freshestAcceptance) ? "na" : str.tostring(freshestAcceptance), text_color = color.white)
+    table.cell(debugTable, 0, 9, "Penalty", text_color = color.white)
+    table.cell(debugTable, 1, 9, na(freshestPenalty) ? "na" : str.tostring(freshestPenalty), text_color = color.white)
+    if showDiagnostics
+        table.cell(debugTable, 0, 10, "Candidate", text_color = color.white)
+        table.cell(debugTable, 1, 10, not na(freshestTotal) ? "Yes" : "No", text_color = not na(freshestTotal) ? color.lime : color.red)
+        table.cell(debugTable, 0, 11, "Core Pass", text_color = color.white)
+        table.cell(debugTable, 1, 11, passesCoreThresholds ? "Yes" : "No", text_color = passesCoreThresholds ? color.lime : color.red)
+        table.cell(debugTable, 0, 12, "Class Exists", text_color = color.white)
+        table.cell(debugTable, 1, 12, not na(freshestClass) ? f_classText(freshestClass) : "No", text_color = not na(freshestClass) ? color.lime : color.red)
+        table.cell(debugTable, 0, 13, "Signal OK", text_color = color.white)
+        table.cell(debugTable, 1, 13, signalConfirmed ? "Yes" : "No", text_color = signalConfirmed ? color.lime : color.red)
+        table.cell(debugTable, 0, 14, "Draw Gate", text_color = color.white)
+        table.cell(debugTable, 1, 14, drawGateOpen ? "Open" : "Closed", text_color = drawGateOpen ? color.lime : color.orange)
+        table.cell(debugTable, 0, 15, "Raw D/E", text_color = color.white)
+        table.cell(debugTable, 1, 15, (na(freshestDispAtrRaw) or na(freshestEfficiencyRaw)) ? "na" : str.tostring(freshestDispAtrRaw, "#.00") + " / " + str.tostring(freshestEfficiencyRaw, "#.00"), text_color = color.white)
+    else
+        table.cell(debugTable, 0, 10, "", text_color = color.white)
+        table.cell(debugTable, 1, 10, "", text_color = color.white)
+        table.cell(debugTable, 0, 11, "", text_color = color.white)
+        table.cell(debugTable, 1, 11, "", text_color = color.white)
+        table.cell(debugTable, 0, 12, "", text_color = color.white)
+        table.cell(debugTable, 1, 12, "", text_color = color.white)
+        table.cell(debugTable, 0, 13, "", text_color = color.white)
+        table.cell(debugTable, 1, 13, "", text_color = color.white)
+        table.cell(debugTable, 0, 14, "", text_color = color.white)
+        table.cell(debugTable, 1, 14, "", text_color = color.white)
+        table.cell(debugTable, 0, 15, "", text_color = color.white)
+        table.cell(debugTable, 1, 15, "", text_color = color.white)
+else if not showDebugTable and not showDiagnostics and barstate.islast
+    table.clear(debugTable, 0, 0, 1, 15)
+
+//------------------------------------------------------------------------------
+// Alert conditions
+//------------------------------------------------------------------------------
+alertcondition(signalConfirmed and freshestClass == CLASS_IGNITION, "Ignition Displacement", "Ignition displacement confirmed")
+alertcondition(signalConfirmed and freshestClass == CLASS_REACTIVE, "Reactive Displacement", "Reactive displacement confirmed")

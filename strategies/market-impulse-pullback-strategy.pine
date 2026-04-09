@@ -1,0 +1,261 @@
+//@version=6
+strategy(
+     "Market Impulse Pullback Strategy",
+     shorttitle="Impulse Pullback Strategy",
+     overlay=true,
+     pyramiding=0,
+     initial_capital=100000,
+     default_qty_type=strategy.percent_of_equity,
+     default_qty_value=10,
+     margin_long=10,
+     margin_short=10,
+     commission_type=strategy.commission.percent,
+     commission_value=0.0
+ )
+
+//------------------------------------------------------------------------------
+// Inputs
+//------------------------------------------------------------------------------
+
+groupSignal = "Signal Settings"
+groupTrend = "Trend Filter"
+groupRisk = "Risk Settings"
+groupSizing = "Position Sizing"
+groupVisual = "Display"
+
+atrLengthInput = input.int(14, "ATR length", minval=1, group=groupSignal)
+impulseThresholdMultipleInput = input.float(1.5, "Impulse threshold (ATR multiple)", minval=0.1, step=0.1, group=groupSignal)
+pullbackWindowBarsInput = input.int(5, "Pullback window (bars)", minval=1, maxval=50, group=groupSignal)
+
+enableEmaFilterInput = input.bool(true, "Enable EMA filter", group=groupTrend)
+emaLengthInput = input.int(50, "EMA length", minval=1, group=groupTrend)
+
+rewardRiskMultipleInput = input.float(2.0, "Reward : risk multiple", minval=0.1, step=0.1, group=groupRisk)
+enableOppositeExitInput = input.bool(true, "Enable opposite signal exit", group=groupRisk)
+
+orderSizeTypeInput = input.string("Percent of Equity", "Order size type", options=["Percent of Equity", "Fixed Quantity"], group=groupSizing, tooltip="Demo sizing model used for submitted orders.")
+percentOfEquityInput = input.float(10.0, "Percent of equity", minval=0.1, maxval=100.0, step=0.5, group=groupSizing, tooltip="Recommended default for cross-symbol portfolio demonstrations.")
+fixedQuantityInput = input.float(1.0, "Fixed quantity", minval=0.000001, step=1.0, group=groupSizing, tooltip="Used when the order size type is set to Fixed Quantity.")
+useMinimumUnitFallbackInput = input.bool(true, "Use minimum tradable unit fallback", group=groupSizing, tooltip="If percent-based sizing calculates less than one tradable unit, use the symbol minimum so the strategy can still demonstrate fills on higher-priced instruments.")
+
+showEmaInput = input.bool(true, "Show EMA", group=groupVisual)
+markImpulseBarsInput = input.bool(true, "Mark impulse candles", group=groupVisual)
+markSignalLabelsInput = input.bool(true, "Mark entry signals", group=groupVisual)
+markTradeLabelsInput = input.bool(true, "Mark actual fills and exits", group=groupVisual)
+
+//------------------------------------------------------------------------------
+// Helpers
+//------------------------------------------------------------------------------
+
+f_has_pullback_long(float impulseHigh, float impulseLow) =>
+    low < impulseHigh and low > impulseLow
+
+f_has_pullback_short(float impulseHigh, float impulseLow) =>
+    high > impulseLow and high < impulseHigh
+
+f_can_trade_long(bool useFilter, float emaValue) =>
+    not useFilter or close > emaValue
+
+f_can_trade_short(bool useFilter, float emaValue) =>
+    not useFilter or close < emaValue
+
+f_round_down_to_step(float value, float step) =>
+    step <= 0.0 ? value : math.floor(value / step) * step
+
+f_normalize_order_qty(float rawQty, float minQty, bool useMinimumFallback) =>
+    float roundedQty = f_round_down_to_step(rawQty, minQty)
+    float fallbackQty = useMinimumFallback and rawQty > 0.0 and roundedQty < minQty ? minQty : roundedQty
+    fallbackQty > 0.0 ? fallbackQty : na
+
+//------------------------------------------------------------------------------
+// Core calculations
+//------------------------------------------------------------------------------
+
+atrValue = ta.atr(atrLengthInput)
+emaValue = ta.ema(close, emaLengthInput)
+candleBody = math.abs(close - open)
+candleRange = high - low
+impulseThreshold = atrValue * impulseThresholdMultipleInput
+minimumTradableQty = math.max(syminfo.mincontract, 0.000001)
+
+isBullishImpulse = close > open and (candleBody >= impulseThreshold or candleRange >= impulseThreshold)
+isBearishImpulse = close < open and (candleBody >= impulseThreshold or candleRange >= impulseThreshold)
+
+longFilterPass = f_can_trade_long(enableEmaFilterInput, emaValue)
+shortFilterPass = f_can_trade_short(enableEmaFilterInput, emaValue)
+
+capitalAllocation = strategy.equity * percentOfEquityInput / 100.0
+percentBasedRawQty = capitalAllocation / close
+requestedOrderQty = orderSizeTypeInput == "Fixed Quantity" ? fixedQuantityInput : percentBasedRawQty
+effectiveOrderQty = f_normalize_order_qty(requestedOrderQty, minimumTradableQty, orderSizeTypeInput == "Percent of Equity" and useMinimumUnitFallbackInput)
+hasValidOrderQty = not na(effectiveOrderQty) and effectiveOrderQty >= minimumTradableQty
+
+//------------------------------------------------------------------------------
+// Pullback setup state
+//------------------------------------------------------------------------------
+
+var float pendingLongImpulseHigh = na
+var float pendingLongImpulseLow = na
+var int pendingLongImpulseBar = na
+var bool pendingLongSawPullback = false
+var bool pendingLongConsumed = false
+
+var float pendingShortImpulseHigh = na
+var float pendingShortImpulseLow = na
+var int pendingShortImpulseBar = na
+var bool pendingShortSawPullback = false
+var bool pendingShortConsumed = false
+
+// Save the most recent impulse levels as candidate pullback setups.
+if isBullishImpulse
+    pendingLongImpulseHigh := high
+    pendingLongImpulseLow := low
+    pendingLongImpulseBar := bar_index
+    pendingLongSawPullback := false
+    pendingLongConsumed := false
+
+if isBearishImpulse
+    pendingShortImpulseHigh := high
+    pendingShortImpulseLow := low
+    pendingShortImpulseBar := bar_index
+    pendingShortSawPullback := false
+    pendingShortConsumed := false
+
+longSetupActive = not na(pendingLongImpulseBar) and not pendingLongConsumed
+shortSetupActive = not na(pendingShortImpulseBar) and not pendingShortConsumed
+
+longSetupExpired = longSetupActive and bar_index - pendingLongImpulseBar > pullbackWindowBarsInput
+shortSetupExpired = shortSetupActive and bar_index - pendingShortImpulseBar > pullbackWindowBarsInput
+
+if longSetupExpired
+    pendingLongImpulseHigh := na
+    pendingLongImpulseLow := na
+    pendingLongImpulseBar := na
+    pendingLongSawPullback := false
+    pendingLongConsumed := false
+
+if shortSetupExpired
+    pendingShortImpulseHigh := na
+    pendingShortImpulseLow := na
+    pendingShortImpulseBar := na
+    pendingShortSawPullback := false
+    pendingShortConsumed := false
+
+if longSetupActive and bar_index > pendingLongImpulseBar and f_has_pullback_long(pendingLongImpulseHigh, pendingLongImpulseLow)
+    pendingLongSawPullback := true
+
+if shortSetupActive and bar_index > pendingShortImpulseBar and f_has_pullback_short(pendingShortImpulseHigh, pendingShortImpulseLow)
+    pendingShortSawPullback := true
+
+//------------------------------------------------------------------------------
+// Entry logic
+//------------------------------------------------------------------------------
+
+inLongPosition = strategy.position_size > 0
+inShortPosition = strategy.position_size < 0
+flatPosition = strategy.position_size == 0
+
+longRiskDistance = longSetupActive ? close - pendingLongImpulseLow : na
+shortRiskDistance = shortSetupActive ? pendingShortImpulseHigh - close : na
+
+longSignalDetected =
+     longSetupActive and
+     pendingLongSawPullback and
+     bar_index > pendingLongImpulseBar and
+     close > open and
+     low > pendingLongImpulseLow and
+     longFilterPass and
+     not na(longRiskDistance) and
+     longRiskDistance > syminfo.mintick
+
+shortSignalDetected =
+     shortSetupActive and
+     pendingShortSawPullback and
+     bar_index > pendingShortImpulseBar and
+     close < open and
+     high < pendingShortImpulseHigh and
+     shortFilterPass and
+     not na(shortRiskDistance) and
+     shortRiskDistance > syminfo.mintick
+
+longEntrySignal = flatPosition and longSignalDetected and hasValidOrderQty
+shortEntrySignal = flatPosition and shortSignalDetected and hasValidOrderQty
+
+if longEntrySignal
+    longStopPrice = pendingLongImpulseLow
+    longTargetPrice = close + longRiskDistance * rewardRiskMultipleInput
+    strategy.entry("Long", strategy.long, qty=effectiveOrderQty)
+    strategy.exit("Long TP/SL", from_entry="Long", stop=longStopPrice, limit=longTargetPrice)
+    pendingLongConsumed := true
+
+if shortEntrySignal
+    shortStopPrice = pendingShortImpulseHigh
+    shortTargetPrice = close - shortRiskDistance * rewardRiskMultipleInput
+    strategy.entry("Short", strategy.short, qty=effectiveOrderQty)
+    strategy.exit("Short TP/SL", from_entry="Short", stop=shortStopPrice, limit=shortTargetPrice)
+    pendingShortConsumed := true
+
+// Optionally close open trades when a fresh opposite impulse appears.
+if enableOppositeExitInput and inLongPosition and isBearishImpulse
+    strategy.close("Long", comment="Opposite impulse")
+
+if enableOppositeExitInput and inShortPosition and isBullishImpulse
+    strategy.close("Short", comment="Opposite impulse")
+
+// Once the trade is finished, clear the consumed setup so a new impulse can take over cleanly.
+if flatPosition and pendingLongConsumed
+    pendingLongImpulseHigh := na
+    pendingLongImpulseLow := na
+    pendingLongImpulseBar := na
+    pendingLongSawPullback := false
+    pendingLongConsumed := false
+
+if flatPosition and pendingShortConsumed
+    pendingShortImpulseHigh := na
+    pendingShortImpulseLow := na
+    pendingShortImpulseBar := na
+    pendingShortSawPullback := false
+    pendingShortConsumed := false
+
+//------------------------------------------------------------------------------
+// Visuals
+//------------------------------------------------------------------------------
+
+emaPlotColor = color.rgb(33, 84, 140)
+bullImpulseColor = color.new(color.rgb(16, 124, 65), 0)
+bearImpulseColor = color.new(color.rgb(179, 55, 55), 0)
+signalColorLong = color.new(color.rgb(21, 94, 117), 0)
+signalColorShort = color.new(color.rgb(146, 64, 14), 0)
+
+plot(showEmaInput and enableEmaFilterInput ? emaValue : na, "EMA", color=emaPlotColor, linewidth=2)
+
+plotshape(markImpulseBarsInput and isBullishImpulse, title="Bullish impulse", style=shape.circle, location=location.belowbar, color=bullImpulseColor, size=size.tiny, text="IMP")
+plotshape(markImpulseBarsInput and isBearishImpulse, title="Bearish impulse", style=shape.circle, location=location.abovebar, color=bearImpulseColor, size=size.tiny, text="IMP")
+
+plotshape(markSignalLabelsInput and longSignalDetected, title="Long signal", style=shape.triangleup, location=location.belowbar, color=signalColorLong, size=size.tiny, text="SIG")
+plotshape(markSignalLabelsInput and shortSignalDetected, title="Short signal", style=shape.triangledown, location=location.abovebar, color=signalColorShort, size=size.tiny, text="SIG")
+
+longFillMarker = markTradeLabelsInput and strategy.position_size[1] <= 0 and strategy.position_size > 0
+shortFillMarker = markTradeLabelsInput and strategy.position_size[1] >= 0 and strategy.position_size < 0
+longExitMarker = markTradeLabelsInput and strategy.position_size[1] > 0 and strategy.position_size == 0
+shortExitMarker = markTradeLabelsInput and strategy.position_size[1] < 0 and strategy.position_size == 0
+
+plotshape(longFillMarker, title="Long filled", style=shape.labelup, location=location.belowbar, color=bullImpulseColor, textcolor=color.white, size=size.tiny, text="Long")
+plotshape(shortFillMarker, title="Short filled", style=shape.labeldown, location=location.abovebar, color=bearImpulseColor, textcolor=color.white, size=size.tiny, text="Short")
+plotshape(longExitMarker, title="Long exit", style=shape.xcross, location=location.abovebar, color=bullImpulseColor, size=size.tiny, text="Exit")
+plotshape(shortExitMarker, title="Short exit", style=shape.xcross, location=location.belowbar, color=bearImpulseColor, size=size.tiny, text="Exit")
+
+//------------------------------------------------------------------------------
+// Usage note
+//------------------------------------------------------------------------------
+
+// How to use:
+// 1. Apply the strategy to a chart and start with the default ATR, pullback window, and reward:risk settings.
+// 2. Percent-based sizing is the recommended demo mode because it adapts better across symbols with different prices.
+// 3. If a symbol still needs a larger minimum order size, enable the minimum tradable unit fallback or switch to Fixed Quantity.
+// 4. "SIG" markers show a valid trade signal, while "Long" and "Short" labels show actual filled trades in the backtest.
+// 5. This remains a portfolio demonstration of indicator-to-strategy conversion, not a production trading system.
+
+// Sizing fix:
+// The earlier version relied on TradingView's implicit order sizing, which could leave higher-priced instruments effectively untradeable.
+// This version uses an explicit order quantity model, a dedicated Position Sizing input group, and demo-friendly capital/margin defaults.
