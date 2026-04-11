@@ -1,8 +1,48 @@
 # TradingView Pine Script Tools
 
+![Pine Script](https://img.shields.io/badge/Pine%20Script-v6-blue)
+![TradingView](https://img.shields.io/badge/platform-TradingView-orange)
+![License](https://img.shields.io/badge/license-MIT-green)
+
 Custom TradingView indicators, strategies, and utilities built in Pine Script for market structure analysis, momentum detection, session mapping, and trade risk planning.
 
 This repository is part of my public portfolio as a Pine Script developer. The focus is on clean, practical tools that can be adapted for custom client work such as indicators, strategy components, alerts, dashboards, and trader utilities.
+
+---
+
+## System Workflow
+
+All tools in this repository follow a common signal-generation architecture.
+
+Market Price Data (OHLC)  
+↓  
+Indicator Logic  
+(pattern detection / statistical analysis / session logic)  
+↓  
+Signal Conditions  
+↓  
+Chart Visualization  
+(zones / labels / markers)  
+↓  
+Trading Alerts or Strategy Rules  
+
+The scripts transform raw price data into structured chart information that traders can use for analysis, decision making, or automation.
+
+---
+
+## Project Impact
+
+Trading platforms provide raw market data but often lack specialized tools tailored to individual trading workflows.
+
+Custom Pine Script development enables traders to:
+
+- visualize market structure and liquidity zones
+- detect momentum and expansion phases
+- automate trading signals and alerts
+- convert discretionary ideas into systematic strategies
+- build reusable chart tools for daily decision making
+
+This repository demonstrates practical Pine Script development patterns used when building custom TradingView indicators and trading utilities.
 
 ---
 
@@ -16,13 +56,13 @@ Detects horizontal compression zones where price repeatedly oscillates within a 
 
 **Highlights**
 
-* Pivot-based range detection
-* Equality tolerance controls
-* Dynamic zone visualization
-* Historical structure review
+* Pivot-based range detection  
+* Equality tolerance controls  
+* Dynamic zone visualization  
+* Historical structure review  
 
-Documentation:
-[docs/liquidity-compression-detector.md](docs/liquidity-compression-detector.md)
+Documentation:  
+docs/liquidity-compression-detector.md
 
 ---
 
@@ -34,13 +74,13 @@ Highlights strong directional candles and short impulse sequences using a multi-
 
 **Highlights**
 
-* Impulse classification
-* ATR-aware displacement logic
-* Composite scoring model
-* Visual momentum markers
+* Impulse classification  
+* ATR-aware displacement logic  
+* Composite scoring model  
+* Visual momentum markers  
 
-Documentation:
-[docs/market-impulse-detector.md](docs/market-impulse-detector.md)
+Documentation:  
+docs/market-impulse-detector.md
 
 ---
 
@@ -54,13 +94,13 @@ Displays key market sessions and higher-timeframe reference levels directly on t
 
 **Highlights**
 
-* Session overlays
-* Daily / weekly / monthly / quarterly levels
-* Historical level display options
-* Intraday chart utility
+* Session overlays  
+* Daily / weekly / monthly / quarterly levels  
+* Historical level display options  
+* Intraday chart utility  
 
-Documentation:
-[docs/market-sessions-htf-levels.md](docs/market-sessions-htf-levels.md)
+Documentation:  
+docs/market-sessions-htf-levels.md
 
 ---
 
@@ -72,13 +112,13 @@ A practical chart utility for calculating position risk from account size, perce
 
 **Highlights**
 
-* Account-based risk sizing
-* Clear chart-side display
-* Fast position sizing workflow
-* Adaptable utility indicator
+* Account-based risk sizing  
+* Clear chart-side display  
+* Fast position sizing workflow  
+* Adaptable utility indicator  
 
-Documentation:
-[docs/trade-risk-assistant.md](docs/trade-risk-assistant.md)
+Documentation:  
+docs/trade-risk-assistant.md
 
 ---
 
@@ -96,49 +136,48 @@ The strategy detects impulse candles, waits for a pullback, and enters when pric
 
 **Highlights**
 
-* ATR-based impulse detection
-* Pullback entry logic
-* EMA trend filter option
-* Fixed reward-to-risk exits
-* Explicit cross-symbol position sizing model
+* ATR-based impulse detection  
+* Pullback entry logic  
+* EMA trend filter option  
+* Fixed reward-to-risk exits  
+* Explicit cross-symbol position sizing model  
 
-Documentation:
-[docs/market-impulse-pullback-strategy.md](docs/market-impulse-pullback-strategy.md)
+Documentation:  
+docs/market-impulse-pullback-strategy.md
 
 ---
 
 # Repository Structure
 
-```
 tradingview-pinescript-tools/
 
 ├── indicators/
-│   ├── liquidity-compression-detector.pine
-│   ├── market-impulse-detector.pine
-│   ├── market-sessions-htf-levels.pine
-│   └── trade-risk-assistant.pine
+│ ├── liquidity-compression-detector.pine
+│ ├── market-impulse-detector.pine
+│ ├── market-sessions-htf-levels.pine
+│ └── trade-risk-assistant.pine
 │
 ├── strategies/
-│   └── market-impulse-pullback-strategy.pine
+│ └── market-impulse-pullback-strategy.pine
 │
 ├── docs/
-│   ├── liquidity-compression-detector.md
-│   ├── market-impulse-detector.md
-│   ├── market-sessions-htf-levels.md
-│   ├── trade-risk-assistant.md
-│   └── market-impulse-pullback-strategy.md
+│ ├── liquidity-compression-detector.md
+│ ├── market-impulse-detector.md
+│ ├── market-sessions-htf-levels.md
+│ ├── trade-risk-assistant.md
+│ └── market-impulse-pullback-strategy.md
 │
 ├── screenshots/
-│   ├── compression-detector.png
-│   ├── impulse-detector.png
-│   ├── risk-assistant.png
-│   ├── session-levels.png
-│   ├── session-levels2.png
-│   ├── strategy-example.png
-│   └── strategy-example2.png
+│ ├── compression-detector.png
+│ ├── impulse-detector.png
+│ ├── risk-assistant.png
+│ ├── session-levels.png
+│ ├── session-levels2.png
+│ ├── strategy-example.png
+│ └── strategy-example2.png
 │
 └── README.md
-```
+
 
 ---
 
@@ -146,11 +185,11 @@ tradingview-pinescript-tools/
 
 This repository demonstrates practical Pine Script development, including:
 
-* indicator development
-* strategy implementation
-* chart-based UI design
-* market data visualization
-* reusable logic for custom TradingView tools
+* indicator development  
+* strategy implementation  
+* chart-based UI design  
+* market data visualization  
+* reusable logic for custom TradingView tools  
 
 It is **not intended as trading advice** or as a complete trading system.
 
@@ -160,13 +199,13 @@ It is **not intended as trading advice** or as a complete trading system.
 
 I build custom Pine Script tools such as:
 
-* custom indicators
-* alert systems
-* indicator-to-strategy conversions
-* session tools
-* trading dashboards
-* risk calculators
-* signal visualization tools
+* custom indicators  
+* alert systems  
+* indicator-to-strategy conversions  
+* session tools  
+* trading dashboards  
+* risk calculators  
+* signal visualization tools  
 
 ---
 
@@ -175,6 +214,8 @@ I build custom Pine Script tools such as:
 Some scripts in this repository are simplified or generalized for public portfolio use.
 
 Public documentation focuses on implementation concepts and user functionality rather than proprietary trading interpretation.
+
+---
 
 ## Custom Pine Script Development
 
