@@ -1,0 +1,235 @@
+//@version=6
+indicator("Market Structure Detector", "Market Structure", overlay = true, max_lines_count = 500, max_labels_count = 500)
+
+//------------------------------------------------------------------------------
+// Inputs
+//------------------------------------------------------------------------------
+groupLogic = "Logic"
+groupDisplay = "Display"
+groupStyle = "Style"
+
+pivotLeft = input.int(3, "Pivot Left Bars", minval = 1, group = groupLogic)
+pivotRight = input.int(3, "Pivot Right Bars", minval = 1, group = groupLogic)
+confirmWithClose = input.bool(true, "Confirm Breaks With Close", group = groupLogic, tooltip = "When enabled, structure breaks require the candle close to move beyond the tracked swing level. When disabled, wick breaks are allowed.")
+eventLabelAtrLength = input.int(14, "Event Label ATR Length", minval = 1, group = groupLogic)
+eventLabelOffsetMult = input.float(0.35, "Event Label Offset Multiplier", minval = 0.05, step = 0.05, group = groupLogic)
+eventLabelBarOffset = input.int(1, "Event Label Bar Offset", minval = 0, maxval = 10, group = groupLogic)
+
+showBosLabels = input.bool(true, "Show BOS Labels", group = groupDisplay)
+showChochLabels = input.bool(true, "Show CHoCH Labels", group = groupDisplay)
+showContinuationBos = input.bool(true, "Show Continuation BOS", group = groupDisplay)
+showSwingClassification = input.bool(true, "Show HH / HL / LH / LL Labels", group = groupDisplay)
+showSwingMarkers = input.bool(true, "Show Swing Markers", group = groupDisplay)
+showStructureLevels = input.bool(true, "Show Structure Levels", group = groupDisplay)
+
+bullishColor = input.color(color.rgb(22, 163, 74), "Bullish Color", group = groupStyle)
+bearishColor = input.color(color.rgb(220, 38, 38), "Bearish Color", group = groupStyle)
+levelWidth = input.int(1, "Active Level Width", minval = 1, maxval = 3, group = groupStyle)
+markerSizeInput = input.string("Small", "Swing Marker Size", options = ["Tiny", "Small", "Normal"], group = groupStyle)
+
+//------------------------------------------------------------------------------
+// Constants and helper functions
+//------------------------------------------------------------------------------
+BIAS_NEUTRAL = 0
+BIAS_BULLISH = 1
+BIAS_BEARISH = -1
+MAX_TRACKED_LINES = 250
+MAX_TRACKED_LABELS = 250
+
+eventLabelAtr = ta.atr(eventLabelAtrLength)
+
+f_classifyHigh(float currentHigh, float previousHigh) =>
+    na(previousHigh) ? "" : currentHigh > previousHigh ? "HH" : "LH"
+
+f_classifyLow(float currentLow, float previousLow) =>
+    na(previousLow) ? "" : currentLow > previousLow ? "HL" : "LL"
+
+f_levelColor(bool isHighLevel, bool isBroken, color bullColor, color bearColor) =>
+    isHighLevel ? (isBroken ? color.new(bullColor, 45) : color.new(bearColor, 65)) : (isBroken ? color.new(bearColor, 45) : color.new(bullColor, 65))
+
+f_eventColor(bool bullishBreak, bool isChoch, color bullColor, color bearColor) =>
+    bullishBreak ? (isChoch ? color.new(bullColor, 0) : color.new(bullColor, 15)) : (isChoch ? color.new(bearColor, 0) : color.new(bearColor, 15))
+
+f_eventLabelY(bool bullishBreak, float atrValue, float offsetMult) =>
+    float safeAtr = math.max(nz(atrValue), syminfo.mintick)
+    bullishBreak ? high + (safeAtr * offsetMult) : low - (safeAtr * offsetMult)
+
+f_eventLabelX(int barOffset) =>
+    bar_index + barOffset
+
+f_eventLabelStyle(bool bullishBreak) =>
+    bullishBreak ? label.style_label_down : label.style_label_up
+
+f_eventLabelSize(bool isChoch) =>
+    isChoch ? size.small : size.tiny
+
+f_registerLine(array<line> lineStore, line lineId, int maxCount) =>
+    array.push(lineStore, lineId)
+    if array.size(lineStore) > maxCount
+        line oldestLine = array.shift(lineStore)
+        if not na(oldestLine)
+            line.delete(oldestLine)
+
+f_registerLabel(array<label> labelStore, label labelId, int maxCount) =>
+    array.push(labelStore, labelId)
+    if array.size(labelStore) > maxCount
+        label oldestLabel = array.shift(labelStore)
+        if not na(oldestLabel)
+            label.delete(oldestLabel)
+
+//------------------------------------------------------------------------------
+// Pivot detection
+//------------------------------------------------------------------------------
+float confirmedPivotHigh = ta.pivothigh(high, pivotLeft, pivotRight)
+float confirmedPivotLow = ta.pivotlow(low, pivotLeft, pivotRight)
+
+bool hasConfirmedHigh = not na(confirmedPivotHigh)
+bool hasConfirmedLow = not na(confirmedPivotLow)
+
+int confirmedHighBar = hasConfirmedHigh ? bar_index - pivotRight : na
+int confirmedLowBar = hasConfirmedLow ? bar_index - pivotRight : na
+
+bool useTinyMarkers = markerSizeInput == "Tiny"
+bool useSmallMarkers = markerSizeInput == "Small"
+bool useNormalMarkers = markerSizeInput == "Normal"
+
+plotshape(showSwingMarkers and useTinyMarkers ? confirmedPivotHigh : na, title = "Swing High Tiny", style = shape.triangledown, location = location.absolute, offset = -pivotRight, color = color.new(bearishColor, 15), size = size.tiny)
+plotshape(showSwingMarkers and useSmallMarkers ? confirmedPivotHigh : na, title = "Swing High Small", style = shape.triangledown, location = location.absolute, offset = -pivotRight, color = color.new(bearishColor, 15), size = size.small)
+plotshape(showSwingMarkers and useNormalMarkers ? confirmedPivotHigh : na, title = "Swing High Normal", style = shape.triangledown, location = location.absolute, offset = -pivotRight, color = color.new(bearishColor, 15), size = size.normal)
+
+plotshape(showSwingMarkers and useTinyMarkers ? confirmedPivotLow : na, title = "Swing Low Tiny", style = shape.triangleup, location = location.absolute, offset = -pivotRight, color = color.new(bullishColor, 15), size = size.tiny)
+plotshape(showSwingMarkers and useSmallMarkers ? confirmedPivotLow : na, title = "Swing Low Small", style = shape.triangleup, location = location.absolute, offset = -pivotRight, color = color.new(bullishColor, 15), size = size.small)
+plotshape(showSwingMarkers and useNormalMarkers ? confirmedPivotLow : na, title = "Swing Low Normal", style = shape.triangleup, location = location.absolute, offset = -pivotRight, color = color.new(bullishColor, 15), size = size.normal)
+
+//------------------------------------------------------------------------------
+// State management
+//------------------------------------------------------------------------------
+var float latestSwingHighPrice = na
+var int latestSwingHighBar = na
+var bool latestSwingHighBroken = false
+var line latestSwingHighLine = na
+
+var float latestSwingLowPrice = na
+var int latestSwingLowBar = na
+var bool latestSwingLowBroken = false
+var line latestSwingLowLine = na
+
+var int structureBias = BIAS_NEUTRAL
+var bool bosAfterChochPrinted = false
+
+var array<line> historicalLines = array.new_line()
+var array<label> historicalLabels = array.new_label()
+
+if showStructureLevels
+    if not na(latestSwingHighLine) and not latestSwingHighBroken
+        line.set_x2(latestSwingHighLine, bar_index)
+    if not na(latestSwingLowLine) and not latestSwingLowBroken
+        line.set_x2(latestSwingLowLine, bar_index)
+
+//------------------------------------------------------------------------------
+// Swing classification
+//------------------------------------------------------------------------------
+if hasConfirmedHigh
+    float previousSwingHigh = latestSwingHighPrice
+    string highClassification = f_classifyHigh(confirmedPivotHigh, previousSwingHigh)
+
+    if showStructureLevels and not na(latestSwingHighLine) and not latestSwingHighBroken
+        line.set_x2(latestSwingHighLine, confirmedHighBar)
+        line.set_extend(latestSwingHighLine, extend.none)
+
+    latestSwingHighPrice := confirmedPivotHigh
+    latestSwingHighBar := confirmedHighBar
+    latestSwingHighBroken := false
+
+    if showStructureLevels
+        latestSwingHighLine := line.new(confirmedHighBar, confirmedPivotHigh, bar_index, confirmedPivotHigh, xloc = xloc.bar_index, extend = extend.right, color = f_levelColor(true, false, bullishColor, bearishColor), style = line.style_dotted, width = levelWidth)
+        f_registerLine(historicalLines, latestSwingHighLine, MAX_TRACKED_LINES)
+    else
+        latestSwingHighLine := na
+
+    if showSwingClassification and highClassification != ""
+        label highLabel = label.new(confirmedHighBar, confirmedPivotHigh, highClassification, xloc = xloc.bar_index, style = label.style_label_down, color = color.new(bearishColor, 10), textcolor = color.white, size = size.tiny)
+        f_registerLabel(historicalLabels, highLabel, MAX_TRACKED_LABELS)
+
+if hasConfirmedLow
+    float previousSwingLow = latestSwingLowPrice
+    string lowClassification = f_classifyLow(confirmedPivotLow, previousSwingLow)
+
+    if showStructureLevels and not na(latestSwingLowLine) and not latestSwingLowBroken
+        line.set_x2(latestSwingLowLine, confirmedLowBar)
+        line.set_extend(latestSwingLowLine, extend.none)
+
+    latestSwingLowPrice := confirmedPivotLow
+    latestSwingLowBar := confirmedLowBar
+    latestSwingLowBroken := false
+
+    if showStructureLevels
+        latestSwingLowLine := line.new(confirmedLowBar, confirmedPivotLow, bar_index, confirmedPivotLow, xloc = xloc.bar_index, extend = extend.right, color = f_levelColor(false, false, bullishColor, bearishColor), style = line.style_dotted, width = levelWidth)
+        f_registerLine(historicalLines, latestSwingLowLine, MAX_TRACKED_LINES)
+    else
+        latestSwingLowLine := na
+
+    if showSwingClassification and lowClassification != ""
+        label lowLabel = label.new(confirmedLowBar, confirmedPivotLow, lowClassification, xloc = xloc.bar_index, style = label.style_label_up, color = color.new(bullishColor, 10), textcolor = color.white, size = size.tiny)
+        f_registerLabel(historicalLabels, lowLabel, MAX_TRACKED_LABELS)
+
+//------------------------------------------------------------------------------
+// Break detection and bias updates
+//------------------------------------------------------------------------------
+float bullishBreakSource = confirmWithClose ? close : high
+float bearishBreakSource = confirmWithClose ? close : low
+
+bool bullishStructureBreak = not na(latestSwingHighPrice) and not latestSwingHighBroken and bar_index > latestSwingHighBar and bullishBreakSource > latestSwingHighPrice
+bool bearishStructureBreak = not na(latestSwingLowPrice) and not latestSwingLowBroken and bar_index > latestSwingLowBar and bearishBreakSource < latestSwingLowPrice
+
+if bullishStructureBreak
+    bool isBullishChoch = structureBias == BIAS_BEARISH
+    bool shouldPlotBullishBos = showBosLabels and (showContinuationBos or not bosAfterChochPrinted)
+    structureBias := BIAS_BULLISH
+    latestSwingHighBroken := true
+
+    if isBullishChoch
+        bosAfterChochPrinted := false
+
+    if showStructureLevels and not na(latestSwingHighLine)
+        line.set_x2(latestSwingHighLine, bar_index)
+        line.set_extend(latestSwingHighLine, extend.none)
+        line.set_style(latestSwingHighLine, line.style_solid)
+        line.set_width(latestSwingHighLine, math.max(levelWidth, 2))
+        line.set_color(latestSwingHighLine, f_levelColor(true, true, bullishColor, bearishColor))
+
+    if (isBullishChoch and showChochLabels) or (not isBullishChoch and shouldPlotBullishBos)
+        string bullishEventText = isBullishChoch ? "CHoCH" : "BOS"
+        int bullishEventLabelX = f_eventLabelX(eventLabelBarOffset)
+        float bullishEventLabelY = f_eventLabelY(true, eventLabelAtr, eventLabelOffsetMult)
+        label bullishBreakLabel = label.new(bullishEventLabelX, bullishEventLabelY, bullishEventText, xloc = xloc.bar_index, style = f_eventLabelStyle(true), color = f_eventColor(true, isBullishChoch, bullishColor, bearishColor), textcolor = color.white, size = f_eventLabelSize(isBullishChoch))
+        f_registerLabel(historicalLabels, bullishBreakLabel, MAX_TRACKED_LABELS)
+
+        if not isBullishChoch
+            bosAfterChochPrinted := true
+
+if bearishStructureBreak
+    bool isBearishChoch = structureBias == BIAS_BULLISH
+    bool shouldPlotBearishBos = showBosLabels and (showContinuationBos or not bosAfterChochPrinted)
+    structureBias := BIAS_BEARISH
+    latestSwingLowBroken := true
+
+    if isBearishChoch
+        bosAfterChochPrinted := false
+
+    if showStructureLevels and not na(latestSwingLowLine)
+        line.set_x2(latestSwingLowLine, bar_index)
+        line.set_extend(latestSwingLowLine, extend.none)
+        line.set_style(latestSwingLowLine, line.style_solid)
+        line.set_width(latestSwingLowLine, math.max(levelWidth, 2))
+        line.set_color(latestSwingLowLine, f_levelColor(false, true, bullishColor, bearishColor))
+
+    if (isBearishChoch and showChochLabels) or (not isBearishChoch and shouldPlotBearishBos)
+        string bearishEventText = isBearishChoch ? "CHoCH" : "BOS"
+        int bearishEventLabelX = f_eventLabelX(eventLabelBarOffset)
+        float bearishEventLabelY = f_eventLabelY(false, eventLabelAtr, eventLabelOffsetMult)
+        label bearishBreakLabel = label.new(bearishEventLabelX, bearishEventLabelY, bearishEventText, xloc = xloc.bar_index, style = f_eventLabelStyle(false), color = f_eventColor(false, isBearishChoch, bullishColor, bearishColor), textcolor = color.white, size = f_eventLabelSize(isBearishChoch))
+        f_registerLabel(historicalLabels, bearishBreakLabel, MAX_TRACKED_LABELS)
+
+        if not isBearishChoch
+            bosAfterChochPrinted := true
