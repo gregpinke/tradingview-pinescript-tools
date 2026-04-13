@@ -104,13 +104,14 @@ Identifies structural turning points and trend events using pivot-based market s
 
 The indicator tracks swing highs and lows, classifies structural pivots, and marks Break of Structure (BOS) and Change of Character (CHoCH) events.
 
-![Market Structure Detector Example](screenshots/market-structure.png)
+![Market Structure Detector Example](screenshots/msd.png)
 
 **Highlights**
 
 - Swing high / swing low detection  
 - HH / HL / LH / LL classification  
-- BOS and CHoCH structure events  
+- Break of Structure (BOS) identification  
+- Change of Character (CHoCH) detection  
 - Dynamic structure level visualization  
 - Optional continuation BOS filtering  
 
@@ -208,7 +209,7 @@ tradingview-pinescript-tools/
 ├── screenshots/
 │   ├── compression-detector.png
 │   ├── impulse-detector.png
-│   ├── market-structure.png
+│   ├── msd.png
 │   ├── risk-assistant.png
 │   ├── session-levels.png
 │   ├── session-levels2.png
